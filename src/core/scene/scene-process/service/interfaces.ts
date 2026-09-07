@@ -36,6 +36,8 @@ import {
     IReferenceImageService,
     IParticleService,
     IPublicParticleService,
+    IPublicTerrainService,
+    ITerrainService,
 } from '../../common';
 
 /**
@@ -60,6 +62,7 @@ export interface IPublicServiceManager {
     UI: IPublicUIService,
     ReferenceImage: IPublicReferenceImageService,
     Particle: IPublicParticleService,
+    Terrain: IPublicTerrainService,
 }
 
 export interface IServiceManager {
@@ -82,4 +85,5 @@ export interface IServiceManager {
     UI: IUIService,
     ReferenceImage: IReferenceImageService,
     Particle: IParticleService,
+    Terrain: ITerrainService,
 }
