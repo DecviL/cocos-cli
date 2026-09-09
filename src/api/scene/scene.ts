@@ -23,6 +23,7 @@ import { assetManager } from '../../core/assets';
 import { ComponentApi } from './component';
 import { NodeApi } from './node';
 import { PrefabApi } from './prefab';
+import { ReflectionProbeApi } from './reflection-probe';
 import { ReferenceImageApi } from './reference-image';
 import { ParticleApi } from './particle';
 import { options } from '../../core/builder/platforms/android/i18n/en';
@@ -31,6 +32,7 @@ export class SceneApi {
     public component: ComponentApi;
     public node: NodeApi;
     public prefab: PrefabApi;
+    public reflectionProbe: ReflectionProbeApi;
     public referenceImage: ReferenceImageApi;
     public particle: ParticleApi;
 
@@ -38,6 +40,7 @@ export class SceneApi {
         this.component = new ComponentApi();
         this.node = new NodeApi();
         this.prefab = new PrefabApi();
+        this.reflectionProbe = new ReflectionProbeApi();
         this.referenceImage = new ReferenceImageApi();
         this.particle = new ParticleApi();
     }
