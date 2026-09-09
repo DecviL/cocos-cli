@@ -677,6 +677,12 @@ describe('prepareResources (end-to-end)', () => {
             expect(main).toContain('http://127.0.0.1:7509/scripting/x/import-map.json');
             expect(application).toContain('1280');
             expect(application).toContain('720');
+            // 资产基址必须指向 preview server 的 /sim-assets 内容路由，不能指项目 library 磁盘路径：
+            // 单个磁盘 base 只覆盖一个 library 目录，而内置资产在 engine 的 internal db library
+            // （editor/library），不在项目 library，直读磁盘够不到 → readFile failed。/sim-assets 路由
+            // 用 getLibraryDirs 聚合所有 db 的 library 目录（含引擎 editor/library）。
+            expect(application).toContain("importBase: this.previewServer + '/sim-assets'");
+            expect(application).toContain("nativeBase: this.previewServer + '/sim-assets'");
         });
 
         it('takes the config.json resolution from the design resolution by default', async () => {
