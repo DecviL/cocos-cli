@@ -68,7 +68,16 @@ export async function generateBundleIndex(bundleName: string): Promise<string> {
 
 export async function writeSettingsFiles(resourcesPath: string, previewData: IPreviewData): Promise<void> {
     await ensureDir(join(resourcesPath, 'src'));
-    await writeFile(join(resourcesPath, 'src', 'settings.json'), `${JSON.stringify(previewData.settings, null, 2)}\n`, 'utf8');
+    const settings = JSON.parse(JSON.stringify(previewData.settings));
+    // simulator 的场景来源是 preview-scene.json（application.js 的 onGameStarted 里
+    // loadWithJson，支持未保存的当前编辑场景）。settings 的 launch.launchScene 会触发引擎
+    // run() 后自动 director.loadScene(uuid)，而 simulator 的 settings 没有 scenes 清单，
+    // 校验报 "not in the build settings before playing" 并中断 run 链，onGameStarted 永不
+    // 执行 → 黑屏。故移除自动启动场景。
+    if (settings.launch) {
+        delete settings.launch.launchScene;
+    }
+    await writeFile(join(resourcesPath, 'src', 'settings.json'), `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
 
     for (const config of previewData.bundleConfigs) {
         const outputConfig = JSON.parse(JSON.stringify(config));
@@ -78,7 +87,13 @@ export async function writeSettingsFiles(resourcesPath: string, previewData: IPr
 
         const bundleDir = join(resourcesPath, 'assets', outputConfig.name);
         await ensureDir(bundleDir);
-        await writeFile(join(bundleDir, 'cc.config.json'), `${JSON.stringify(outputConfig, null, 2)}\n`, 'utf8');
+        const bundleConfigJson = `${JSON.stringify(outputConfig, null, 2)}\n`;
+        await writeFile(join(bundleDir, 'cc.config.json'), bundleConfigJson, 'utf8');
+        // 引擎运行时 downloadBundle 读取的是 `config.json`（cocos/asset/asset-manager/
+        // downloader.ts），cc.config.json 只是编辑器/打包工具侧的名字。缺 config.json 时
+        // internal/main bundle 注册失败，所有 uuid 回落 generalImportBase（项目 library），
+        // 内置资产读取全部失败（Read json failed 刷屏）→ 黑屏。
+        await writeFile(join(bundleDir, 'config.json'), bundleConfigJson, 'utf8');
         await writeFile(join(bundleDir, 'index.js'), await generateBundleIndex(outputConfig.name), 'utf8');
     }
 }
