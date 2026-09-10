@@ -1,4 +1,6 @@
 import { register, BaseService, Service } from './core';
+import { queryRegisteredService } from './core/decorator';
+import type { ComponentService } from './component';
 import {
     type ICreateByAssetParams,
     type ICreateByNodeTypeParams,
@@ -532,6 +534,14 @@ export class NodeService extends BaseService<INodeEvents> implements INodeServic
                 return null;
             }
 
+            // The root in prefab editing mode represents the prefab asset.
+            // A select-all delete may include it, but the asset root must stay
+            // in place so that it is not replaced with an anonymous Empty Node.
+            if (Service.Editor.getCurrentEditorType() === 'prefab' && node.uuid === root.uuid) {
+                console.warn('Cannot remove the root node of an opened prefab asset.');
+                return null;
+            }
+
             const uuids = Service.Prefab.filterChildOfPrefabAssetWhenRemoveNode(node.uuid);
             if (!uuids.length) {
                 return null;
@@ -856,6 +866,14 @@ export class NodeService extends BaseService<INodeEvents> implements INodeServic
     }
 
     public async resetProperty(options: ISetPropertyOptions): Promise<boolean> {
+        // Node snapshots deliberately skip components during restoration.
+        if (/^__comps__\.\d+\./.test(options.path)) {
+            const componentService = queryRegisteredService<ComponentService>('Component');
+            if (!componentService) {
+                throw new Error('Component service is not registered');
+            }
+            return componentService.resetProperty(options);
+        }
         const node = NodeMgr.getNodeByPath(options.nodePath);
         if (!node) {
             return false;
