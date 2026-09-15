@@ -20,9 +20,28 @@ const mockAssetManager = {
     onAnimationGraphChanged: jest.fn(),
 };
 
+const mockAssetDBManager = {
+    ready: true,
+    assetDBMap: {} as Record<string, { options: { target: string } }>,
+    assetDBInfo: {} as Record<string, unknown>,
+    addDB: jest.fn(),
+};
+
+const mockAssetConfig = {
+    data: {
+        assetDBList: [] as Array<{ name: string }>,
+    },
+    resolveBuiltinLocalizationMount: jest.fn(),
+};
+
 jest.mock('../../src/core/assets', () => ({
-    assetDBManager: {},
+    assetDBManager: mockAssetDBManager,
     assetManager: mockAssetManager,
+}));
+
+jest.mock('../../src/core/assets/asset-config', () => ({
+    __esModule: true,
+    default: mockAssetConfig,
 }));
 
 import * as Assets from '../../src/lib/assets/assets';
@@ -30,6 +49,10 @@ import * as Assets from '../../src/lib/assets/assets';
 describe('lib assets api', () => {
     afterEach(() => {
         jest.clearAllMocks();
+        mockAssetDBManager.ready = true;
+        mockAssetDBManager.assetDBMap = {};
+        mockAssetDBManager.assetDBInfo = {};
+        mockAssetConfig.data.assetDBList = [];
     });
 
     it('does not expose saveAssetMeta from the public lib API', () => {
@@ -222,5 +245,49 @@ describe('lib assets api', () => {
 
         await expect(Assets.queryPropertySchema('image')).resolves.toEqual(schema);
         expect(mockAssetManager.queryPropertySchema).toHaveBeenCalledWith('image');
+    });
+
+    it('does not record a mount when AssetDB registration fails', async () => {
+        const canonical = {
+            name: 'localization-editor',
+            target: 'C:/builtin/static/assets',
+            readonly: true,
+            visible: true,
+            library: 'C:/project/library/localization-editor',
+        };
+        const reconcile = (Assets as {
+            reconcileLocalizationRuntimeMount: () => Promise<void>;
+        }).reconcileLocalizationRuntimeMount;
+
+        const addError = new Error('AssetDB start failed');
+        mockAssetConfig.resolveBuiltinLocalizationMount.mockReturnValue(canonical);
+        mockAssetDBManager.addDB.mockRejectedValue(addError);
+
+        await expect(reconcile()).rejects.toBe(addError);
+        expect(mockAssetConfig.data.assetDBList).toEqual([]);
+    });
+
+    it('rejects reconciliation before AssetDB readiness and on same-name target conflict', async () => {
+        const canonical = {
+            name: 'localization-editor',
+            target: 'C:/builtin/static/assets',
+            readonly: true,
+            visible: true,
+            library: 'C:/project/library/localization-editor',
+        };
+        mockAssetConfig.resolveBuiltinLocalizationMount.mockReturnValue(canonical);
+        const reconcile = (Assets as {
+            reconcileLocalizationRuntimeMount: () => Promise<void>;
+        }).reconcileLocalizationRuntimeMount;
+
+        mockAssetDBManager.ready = false;
+        await expect(reconcile()).rejects.toThrow('Asset database is not ready');
+        expect(mockAssetConfig.resolveBuiltinLocalizationMount).not.toHaveBeenCalled();
+
+        mockAssetDBManager.ready = true;
+        mockAssetDBManager.assetDBMap[canonical.name] = { options: { target: 'C:/other/static/assets' } };
+        await expect(reconcile()).rejects.toThrow('target conflict');
+        expect(mockAssetDBManager.addDB).not.toHaveBeenCalled();
+        expect(mockAssetConfig.data.assetDBList).toEqual([]);
     });
 });
