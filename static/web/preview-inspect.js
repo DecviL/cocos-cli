@@ -456,28 +456,30 @@ class PreviewInspect {
 			if (!comp || !this._isValid(comp)) {
 				throw new Error(`preview set-property: component[${compMatch[1]}] not found on '${nodePath}'`);
 			}
-			if (!this._applyValueByPath(comp, compMatch[2], dump)) {
-				throw new Error(`preview set-property: failed to apply '${rawPath}' on '${nodePath}'`);
-			}
+			this._writeRecordedProperty(comp, compMatch[2], dump, { node, nodePath, rawPath, isNode: false });
 		} else {
-			// 改名(Hierarchy 的 Rename 就走这条路径)需要额外记 undo 并重建索引:名字是路径的组成部分,
+			// 改名(Hierarchy 的 Rename 就走这条路径)需要专属 undo 记录并重建索引:名字是路径的组成部分,
 			// 不重建索引的话后续所有按 path 的定位都会指向旧名。
 			const isRename = rawPath === 'name' && !this._isScene(node);
-			const oldName = isRename ? node.name : undefined;
-			if (!this._applyValueByPath(node, rawPath, dump)) {
-				throw new Error(`preview set-property: failed to apply '${rawPath}' on '${nodePath}'`);
-			}
-			if (isRename && node.name !== oldName) {
-				const newName = node.name;
-				this._pushCommand({
-					label: 'Rename Node',
-					undo: () => { if (this._isValid(node)) { node.name = oldName; } },
-					redo: () => { if (this._isValid(node)) { node.name = newName; } },
-				});
-				this._afterWrite(node, nodePath, rawPath);
-				this._rebuildIndex();
-				this._flushStructure();
-				return true;
+			if (isRename) {
+				const oldName = node.name;
+				if (!this._applyValueByPath(node, rawPath, dump)) {
+					throw new Error(`preview set-property: failed to apply '${rawPath}' on '${nodePath}'`);
+				}
+				if (node.name !== oldName) {
+					const newName = node.name;
+					this._pushCommand({
+						label: 'Rename Node',
+						undo: () => { if (this._isValid(node)) { node.name = oldName; } },
+						redo: () => { if (this._isValid(node)) { node.name = newName; } },
+					});
+					this._afterWrite(node, nodePath, rawPath);
+					this._rebuildIndex();
+					this._flushStructure();
+					return true;
+				}
+			} else {
+				this._writeRecordedProperty(node, rawPath, dump, { node, nodePath, rawPath, isNode: true });
 			}
 		}
 		this._afterWrite(node, nodePath, rawPath);
@@ -501,6 +503,85 @@ class PreviewInspect {
 			return false;
 		}
 		return this._applyValue(holder, segs[segs.length - 1], dump);
+	}
+
+	/**
+	 * 单值属性写入 + 独立 undo 记录(node/component 通用)。对齐编辑态「recording 之外的写入
+	 * 退化成各自独立的 undo 记录」的语义;group/recording 活跃时 _pushCommand 自动收集进当前
+	 * group,结束时组内全部写入合成单步——Inspector 拖动/滑杆连续写仍只产出一步 undo。
+	 *
+	 * 快照按「顶层属性」粒度(subPath 首段),undo/redo 整值写回:
+	 *  - node 侧写回统一走 _applyValue:transform 走 setter(position/scale),且 'rotation' 的
+	 *    dump 是欧拉角而真实存储是 eulerAngles——按快照裸写回 'rotation' 会把欧拉角当四元数;
+	 *  - component 侧整值裸写(尊重原型 setter)后 _syncComponentModel 重建渲染模型
+	 *    (_mesh 这类序列化键的裸写会绕过公开 setter,理由同 resetNodeProperty);
+	 *  - 写回后 _afterWrite 回推 node:change 全量 dump,让 Inspector 立即反映撤销/重做后的值。
+	 * 旧值快照失败(exotic getter 等)时降级为不记录——与旧行为一致,绝不阻断写入本身。
+	 */
+	_writeRecordedProperty(owner, subPath, dump, context) {
+		const node = context.node;
+		const nodePath = context.nodePath;
+		const rawPath = context.rawPath;
+		const isNode = context.isNode;
+		const segs = String(subPath).split('.').filter(s => s.length > 0);
+		const topKey = segs[0];
+		let oldWhole;
+		let recordable = typeof topKey === 'string' && topKey.length > 0;
+		if (recordable) {
+			try {
+				oldWhole = this._wholePropValue(owner, topKey, isNode);
+			} catch {
+				recordable = false;
+			}
+		}
+		if (!this._applyValueByPath(owner, subPath, dump)) {
+			throw new Error(`preview set-property: failed to apply '${rawPath}' on '${nodePath}'`);
+		}
+		if (!recordable) {
+			return;
+		}
+		// redo 用「写后回读」而非入参 dump:嵌套子路径(如 'position.x')只带局部分量,
+		// 整值回读才能保证 redo 与本次写入后的真实状态完全一致。
+		let newWhole;
+		try {
+			newWhole = this._wholePropValue(owner, topKey, isNode);
+		} catch {
+			newWhole = undefined;
+		}
+		const type = dump && dump.type;
+		const restore = value => {
+			if (!this._isValid(owner)) {
+				return;
+			}
+			try {
+				if (isNode) {
+					this._applyValue(owner, topKey, { type, value });
+				} else {
+					owner[topKey] = value;
+					this._syncComponentModel(owner);
+				}
+			} catch { /* 尽力写回:单值失败不放大,_applyHistory 统一收敛结果 */ }
+			// 撤销/重做可能发生在结构变化之后:按当前索引取路径,游离节点(不在树上)不回推。
+			this._rebuildIndex();
+			const currentPath = this._pathOfNode(node);
+			if (currentPath !== '' || this._isScene(node)) {
+				this._afterWrite(node, currentPath, rawPath);
+			}
+		};
+		this._pushCommand({
+			label: 'Set Property',
+			undo: () => restore(this._clonePropValue(oldWhole)),
+			redo: () => restore(this._clonePropValue(newWhole)),
+		});
+	}
+
+	/** 顶层属性当前值快照:node 的 'rotation' 取 eulerAngles(dump 语义是欧拉角),其余 _clonePropValue 深拷。 */
+	_wholePropValue(owner, topKey, isNode) {
+		if (isNode && topKey === 'rotation') {
+			const euler = owner.eulerAngles;
+			return euler && typeof euler === 'object' ? this._valueTypeToPlain(euler) : euler;
+		}
+		return this._clonePropValue(owner[topKey]);
 	}
 
 	/** 把裸值写回 holder[key]:节点 transform 走 setter,ValueType 新建实例,其余标量/enum 直接赋。 */
@@ -717,6 +798,33 @@ class PreviewInspect {
 		if (!added) {
 			throw new Error(`preview add-component: addComponent('${component}') returned null`);
 		}
+		// undo 记录:undo 摘除但不 destroy(引用交给 _detachedComponents,stop/clearHistory 才真正销毁),
+		// redo 原位插回——与 removeComponent 的 detach/attach 哲学一致。
+		const addedIndex = Math.max(((node.components) || node._components || []).indexOf(added), 0);
+		const detachAdded = () => {
+			const list = (node.components) || node._components || [];
+			const at = list.indexOf(added);
+			if (at >= 0) {
+				list.splice(at, 1);
+			}
+			this._detachedComponents.add(added);
+			try {
+				if (typeof added.onDisable === 'function') { added.onDisable(); }
+			} catch { /* 生命周期补偿失败无副作用 */ }
+		};
+		const attachAdded = () => {
+			const list = (node.components) || node._components || [];
+			list.splice(Math.min(addedIndex, list.length), 0, added);
+			this._detachedComponents.delete(added);
+			try {
+				if (added.enabled && typeof added.onEnable === 'function') { added.onEnable(); }
+			} catch { /* 生命周期补偿失败无副作用 */ }
+		};
+		this._pushCommand({
+			label: 'Add Component',
+			undo: () => { detachAdded(); this._rebuildIndex(); this._emitCompsChange(node, nodePath); },
+			redo: () => { attachAdded(); this._rebuildIndex(); this._emitCompsChange(node, nodePath); },
+		});
 		// 结构变更:回推带完整 dump 的 node:change,让 Inspector 重取该节点、刷新出新组件。
 		this._emit('node:change', {
 			node: this._dumpNode(node, nodePath, true),

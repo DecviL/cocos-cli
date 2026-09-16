@@ -997,6 +997,155 @@ describe('preview-inspect M5 组件操作', () => {
     });
 });
 
+// ---- 单值属性写入 undo(回归:预览里 Inspector 修改节点属性后 Undo/Redo 必须有记录)----
+
+describe('preview-inspect 单值属性写入 undo', () => {
+    it('node 标量属性写入记独立 undo 步,undo/redo 整值还原/重放', () => {
+        const world = createWorld();
+        const target = world.node('A', world.scene);
+        world.start();
+
+        world.agent.setProperty({ nodePath: 'A', path: 'active', dump: { type: 'Boolean', value: false } });
+        expect(target.active).toBe(false);
+
+        expect(world.agent.undo()).toEqual({ success: true, label: 'Set Property' });
+        expect(target.active).toBe(true);
+        expect(world.agent.redo()).toEqual({ success: true, label: 'Set Property' });
+        expect(target.active).toBe(false);
+    });
+
+    it('node transform 嵌套分量写入(position.x)按顶层属性整体快照,undo 还原整向量', () => {
+        const world = createWorld();
+        const target = world.node('A', world.scene);
+        target.position = { x: 1, y: 2, z: 3 };
+        world.start();
+
+        world.agent.setProperty({ nodePath: 'A', path: 'position.x', dump: { type: 'Float', value: 9 } });
+        expect(target.position).toEqual({ x: 9, y: 2, z: 3 });
+
+        expect(world.agent.undo()).toEqual({ success: true, label: 'Set Property' });
+        expect(target.position).toEqual({ x: 1, y: 2, z: 3 });
+        expect(world.agent.redo()).toEqual({ success: true, label: 'Set Property' });
+        expect(target.position).toEqual({ x: 9, y: 2, z: 3 });
+    });
+
+    it('rotation 写入按欧拉角快照:undo 还原 eulerAngles,绝不裸写 rotation 键', () => {
+        const world = createWorld();
+        const target = world.node('A', world.scene);
+        world.start();
+
+        world.agent.setProperty({ nodePath: 'A', path: 'rotation', dump: { type: 'cc.Vec3', value: { x: 0, y: 90, z: 0 } } });
+        expect(target.eulerAngles).toEqual({ x: 0, y: 90, z: 0 });
+
+        expect(world.agent.undo()).toEqual({ success: true, label: 'Set Property' });
+        expect(target.eulerAngles).toEqual({ x: 0, y: 0, z: 0 });
+        // 快照若错拿 node.rotation(四元数)或裸写回 'rotation' 键,这里会出现幽灵属性。
+        expect((target as any).rotation).toBeUndefined();
+
+        expect(world.agent.redo()).toEqual({ success: true, label: 'Set Property' });
+        expect(target.eulerAngles).toEqual({ x: 0, y: 90, z: 0 });
+    });
+
+    it('组件属性写入记 undo:undo 还原旧值、redo 重放', () => {
+        const world = createWorld();
+        const ui = world.node('UI', world.scene);
+        const label = ui.addComponent(StubLabel) as StubLabel;
+        world.start();
+
+        world.agent.setProperty({ nodePath: 'UI', path: '__comps__.0.content', dump: { type: 'String', value: 'bye' } });
+        expect(label.content).toBe('bye');
+
+        expect(world.agent.undo()).toEqual({ success: true, label: 'Set Property' });
+        expect(label.content).toBe('hello');
+        expect(world.agent.redo()).toEqual({ success: true, label: 'Set Property' });
+        expect(label.content).toBe('bye');
+    });
+
+    it('组件属性 undo/redo 写回后经 onRestore 同步渲染模型(裸写会绕过公开 setter)', () => {
+        const world = createWorld();
+        const ui = world.node('UI', world.scene);
+        const renderer = ui.addComponent(StubMeshRenderer) as StubMeshRenderer;
+        renderer._objFlags = 1;
+        world.start();
+
+        world.agent.setProperty({ nodePath: 'UI', path: '__comps__.0._objFlags', dump: { type: 'Number', value: 2 } });
+        expect(renderer._objFlags).toBe(2);
+        const before = renderer.restoreCount;
+
+        expect(world.agent.undo().success).toBe(true);
+        expect(renderer._objFlags).toBe(1);
+        expect(renderer.restoreCount).toBe(before + 1);
+        expect(world.agent.redo().success).toBe(true);
+        expect(renderer._objFlags).toBe(2);
+        expect(renderer.restoreCount).toBe(before + 2);
+    });
+
+    it('组件嵌套子路径写入(__comps__.0.offset.x)按顶层属性快照,undo 还原整体', () => {
+        const world = createWorld();
+        const ui = world.node('UI', world.scene);
+        const label = ui.addComponent(StubLabel) as StubLabel;
+        world.start();
+
+        world.agent.setProperty({ nodePath: 'UI', path: '__comps__.0.offset.x', dump: { type: 'Float', value: 7 } });
+        expect(label.offset).toEqual({ x: 7, y: 2 });
+
+        expect(world.agent.undo()).toEqual({ success: true, label: 'Set Property' });
+        expect(label.offset).toEqual({ x: 1, y: 2 });
+    });
+
+    it('rename 只记一步 Rename Node,不叠加通用 Set Property 记录', () => {
+        const world = createWorld();
+        const parent = world.node('Parent', world.scene);
+        world.node('A', parent);
+        world.start();
+
+        world.agent.setProperty({ nodePath: 'Parent/A', path: 'name', dump: { type: 'String', value: 'Renamed' } });
+
+        expect(world.agent.undo()).toEqual({ success: true, label: 'Rename Node' });
+        expect(world.agent.canUndo()).toBe(false);
+    });
+
+    it('group 内多次属性写入合成单步(begin-recording 降级语义的基础),undo 逆序整体还原', () => {
+        const world = createWorld();
+        const target = world.node('A', world.scene);
+        world.start();
+
+        const token = world.agent.beginGroup({ label: 'Inspector Property Edit' });
+        world.agent.setProperty({ nodePath: 'A', path: 'active', dump: { type: 'Boolean', value: false } });
+        world.agent.setProperty({ nodePath: 'A', path: 'position', dump: { type: 'cc.Vec3', value: { x: 3, y: 0, z: 0 } } });
+        expect(world.agent.endGroup(token)).toEqual({ success: true, commandId: token, label: 'Inspector Property Edit' });
+
+        expect(target.active).toBe(false);
+        expect(world.agent.undo()).toEqual({ success: true, label: 'Inspector Property Edit' });
+        expect(target.active).toBe(true);
+        expect(target.position).toEqual({ x: 0, y: 0, z: 0 });
+        expect(world.agent.canUndo()).toBe(false);
+    });
+
+    it('Add Component 记 undo:undo 摘除不 destroy、redo 原位插回、stop 销毁游离组件', () => {
+        const world = createWorld();
+        const ui = world.node('UI', world.scene);
+        ui.addComponent(StubBadge);
+        world.start();
+
+        world.agent.addComponent({ nodePath: 'UI', component: StubLabel });
+        expect(ui._components).toHaveLength(2);
+        const added = ui._components[1] as StubLabel;
+
+        expect(world.agent.undo()).toEqual({ success: true, label: 'Add Component' });
+        expect(ui._components).toHaveLength(1);
+        expect(added._destroyed).toBe(false); // 摘除不 destroy,等待 redo 复活或 stop 清理
+
+        expect(world.agent.redo()).toEqual({ success: true, label: 'Add Component' });
+        expect(ui._components).toHaveLength(2);
+        expect(ui._components[1]).toBe(added); // 原位插回
+
+        expect(world.agent.undo().success).toBe(true);
+        world.agent.stop();
+        expect(added._destroyed).toBe(true); // 停止即丢弃:游离组件被销毁
+    });
+});
+
 // ---- 节点/组件单属性 reset(node.reset-property,Inspector 节点菜单/属性级 reset) ----------
 
 describe('preview-inspect node.reset-property', () => {
