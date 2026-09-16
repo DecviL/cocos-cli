@@ -65,6 +65,7 @@ class StubNode {
     public position = { x: 0, y: 0, z: 0 };
     public eulerAngles = { x: 0, y: 0, z: 0 };
     public scale = { x: 1, y: 1, z: 1 };
+    public mobility = 0;
 
     constructor(public name = 'New Node') { }
 
@@ -156,6 +157,10 @@ interface IWorldOptions {
     table?: unknown;
     /** `/scene/asset-meta` 的响应表:dbURL → { uuid, type, name, subAssets? };未登记的 dbURL 404。 */
     assetMeta?: Record<string, { uuid: string; type: string; name: string; subAssets?: Array<{ uuid: string; type: string; name: string }> }>;
+    /** `/scene/component-help` 的响应(组件短类名 → 文档 URL);不提供该键表示路由 404。 */
+    componentHelp?: Record<string, string>;
+    /** 桩 cc.MobilityMode;不提供则与真实预览运行时一致(该枚举不在 cc 命名空间上)。 */
+    mobilityMode?: Record<string, number>;
 }
 
 interface IWorld {
@@ -198,6 +203,12 @@ function createWorld(options: IWorldOptions = {}): IWorld {
                 ? { ok: false, status: 404, json: async () => ({}) }
                 : { ok: true, status: 200, json: async () => table };
         }
+        if (url.endsWith('/scene/component-help')) {
+            const helpTable = 'componentHelp' in options ? options.componentHelp : undefined;
+            return helpTable
+                ? { ok: true, status: 200, json: async () => helpTable }
+                : { ok: false, status: 404, json: async () => ({}) };
+        }
         if (url.includes('/scene/asset-meta')) {
             const metaTable = options.assetMeta || {};
             const dbURL = decodeURIComponent(url.split('dbURL=')[1] || '');
@@ -219,6 +230,7 @@ function createWorld(options: IWorldOptions = {}): IWorld {
             constructor(public x = 0, public y = 0, public z = 0) { }
         },
         Object: { Flags: { HideInHierarchy: 1 << 9, LockedInEditor: 1 << 8 } },
+        ...(options.mobilityMode ? { MobilityMode: options.mobilityMode } : {}),
         director: { getScene: () => scene },
         isValid: (obj: any) => Boolean(obj) && !obj._destroyed,
         js: {
@@ -799,6 +811,16 @@ class StubLabel extends StubComponent {
 
 class StubBadge extends StubComponent { }
 
+/** 模拟 MeshRenderer:序列化键是私有名(_mesh),渲染模型靠 onRestore 重建(对齐引擎 mesh-renderer.ts:596)。 */
+class StubMeshRenderer extends StubComponent {
+    public _mesh: unknown = { fake: 'default-mesh' };
+    public _materials: unknown[] = [{ fake: 'default-mat' }];
+    public _objFlags = 0;
+    public restoreCount = 0;
+    public onRestore(): void { this.restoreCount++; }
+}
+(StubMeshRenderer as any).__props__ = ['_mesh', '_materials', '_objFlags'];
+
 describe('preview-inspect M5 组件操作', () => {
     it('removeComponent 摘除不 destroy、发 node:change(__comps__)、undo 原位复活', () => {
         const world = createWorld();
@@ -861,6 +883,44 @@ describe('preview-inspect M5 组件操作', () => {
         expect(label.content).toBe('changed');
         expect(label.fontSize).toBe(99);
         expect(world.agent.canUndo()).toBe(false);
+    });
+
+    it('resetComponent 写回后调 onRestore 同步渲染模型,undo/redo 同样同步;身份字段不按默认值写回', () => {
+        const world = createWorld();
+        const ui = world.node('UI', world.scene);
+        const renderer = ui.addComponent(StubMeshRenderer) as StubMeshRenderer;
+        renderer._objFlags = 42;
+        world.start();
+
+        renderer._mesh = { fake: 'cube-mesh' };
+        renderer._materials = [{ fake: 'red-mat' }];
+        world.agent.resetComponent({ path: 'UI/cc.MeshRenderer' });
+
+        // 字段回到新实例默认;onRestore 调一次(真实引擎据此重建模型,立方体应消失而非品红旧 mesh)。
+        expect(renderer._mesh).toEqual({ fake: 'default-mesh' });
+        expect(renderer._materials).toEqual([{ fake: 'default-mat' }]);
+        expect(renderer.restoreCount).toBe(1);
+        expect(renderer._objFlags).toBe(42);
+
+        expect(world.agent.undo().success).toBe(true);
+        expect(renderer._mesh).toEqual({ fake: 'cube-mesh' });
+        expect(renderer.restoreCount).toBe(2);
+        expect(world.agent.redo().success).toBe(true);
+        expect(renderer._mesh).toEqual({ fake: 'default-mesh' });
+        expect(renderer.restoreCount).toBe(3);
+    });
+
+    it('onRestore 抛错只告警,不推翻 reset 写回结果', () => {
+        const world = createWorld();
+        const ui = world.node('UI', world.scene);
+        const renderer = ui.addComponent(StubMeshRenderer) as StubMeshRenderer;
+        renderer.onRestore = (): void => { throw new Error('boom'); };
+        world.start();
+
+        renderer._mesh = { fake: 'cube-mesh' };
+        expect(() => world.agent.resetComponent({ path: 'UI/cc.MeshRenderer' })).not.toThrow();
+        expect(renderer._mesh).toEqual({ fake: 'default-mesh' });
+        expect(world.eventsOf('view:log').length).toBeGreaterThan(0);
     });
 
     it('moveArrayElement 交换组件顺序、undo 反交换;越界与非 __comps__ 路径直接抛', () => {
@@ -934,6 +994,152 @@ describe('preview-inspect M5 组件操作', () => {
         expect(world.agent.undo().success).toBe(true);
         expect(label.content).toBe('hello');
         expect(label.fontSize).toBe(20);
+    });
+});
+
+// ---- 节点/组件单属性 reset(node.reset-property,Inspector 节点菜单/属性级 reset) ----------
+
+describe('preview-inspect node.reset-property', () => {
+    it('节点 transform reset:position/rotation → 零、scale → 1,逐次单步 undo/redo', () => {
+        const world = createWorld();
+        const ui = world.node('UI', world.scene);
+        world.start();
+
+        ui.position = { x: 5, y: 6, z: 7 };
+        ui.eulerAngles = { x: 10, y: 20, z: 30 };
+        ui.scale = { x: 2, y: 3, z: 4 };
+        world.agent.resetNodeProperty({ nodePath: 'UI', path: 'position' });
+        world.agent.resetNodeProperty({ nodePath: 'UI', path: 'rotation' });
+        world.agent.resetNodeProperty({ nodePath: 'UI', path: 'scale' });
+
+        expect(ui.position).toEqual({ x: 0, y: 0, z: 0 });
+        expect(ui.eulerAngles).toEqual({ x: 0, y: 0, z: 0 });
+        expect(ui.scale).toEqual({ x: 1, y: 1, z: 1 });
+        const changes = world.eventsOf('node:change');
+        expect(changes[changes.length - 1].change).toEqual({ propPath: 'scale', source: 'engine' });
+
+        // 三次 reset 各自一步 undo,倒序还原。
+        expect(world.agent.undo()).toEqual({ success: true, label: 'Reset Property' });
+        expect(ui.scale).toEqual({ x: 2, y: 3, z: 4 });
+        expect(world.agent.undo().success).toBe(true);
+        expect(ui.eulerAngles).toEqual({ x: 10, y: 20, z: 30 });
+        expect(world.agent.redo().success).toBe(true);
+        expect(ui.eulerAngles).toEqual({ x: 0, y: 0, z: 0 });
+    });
+
+    it('mobility 等无引擎约定默认的属性走新实例初始值(0),undo 还原', () => {
+        const world = createWorld();
+        const ui = world.node('UI', world.scene);
+        world.start();
+
+        ui.mobility = 2;
+        world.agent.resetNodeProperty({ nodePath: 'UI', path: 'mobility' });
+
+        expect(ui.mobility).toBe(0);
+        expect(world.agent.undo().success).toBe(true);
+        expect(ui.mobility).toBe(2);
+    });
+
+    it('组件单属性 reset(__comps__.{i}.{key}) 只影响指定键并合成单步 undo', () => {
+        const world = createWorld();
+        const ui = world.node('UI', world.scene);
+        const label = ui.addComponent(StubLabel) as StubLabel;
+        world.start();
+
+        label.fontSize = 99;
+        label.content = 'changed';
+        world.agent.resetNodeProperty({ nodePath: 'UI', path: '__comps__.0.fontSize' });
+
+        expect(label.fontSize).toBe(20); // new 临时实例的默认
+        expect(label.content).toBe('changed'); // 其余键不受影响
+        expect(world.agent.undo()).toEqual({ success: true, label: 'Reset Property' });
+        expect(label.fontSize).toBe(99);
+    });
+
+    it('节点/组件不存在或属性无默认时抛可定位错误,不留 undo', () => {
+        const world = createWorld();
+        world.node('UI', world.scene);
+        world.start();
+
+        expect(() => world.agent.resetNodeProperty({ nodePath: 'Ghost', path: 'position' })).toThrow(/node not found/);
+        expect(() => world.agent.resetNodeProperty({ nodePath: 'UI', path: '__comps__.9.fontSize' })).toThrow(/component\[9\] not found/);
+        expect(world.agent.canUndo()).toBe(false);
+    });
+});
+
+describe('preview-inspect 节点 dump 枚举元数据', () => {
+    it('mobility 取不到 cc.MobilityMode 时回退 node-enum 三值枚举清单(预览态下拉对齐编辑态)', () => {
+        const world = createWorld(); // 桩 cc 不含 MobilityMode,与真实预览运行时一致
+        world.node('UI', world.scene);
+        world.start();
+
+        const dump = world.agent.query({ path: 'UI' });
+        expect(dump.mobility.type).toBe('Enum');
+        expect(dump.mobility.value).toBe(0);
+        expect(dump.mobility.enumList).toEqual([
+            { name: 'Static', value: 0 },
+            { name: 'Stationary', value: 1 },
+            { name: 'Movable', value: 2 },
+        ]);
+    });
+
+    it('cc.MobilityMode 存在时优先用运行时枚举(兜底清单不越权)', () => {
+        const world = createWorld({ mobilityMode: { Static: 0, Stationary: 1, Movable: 2, Extra: 3 } });
+        world.node('UI', world.scene);
+        world.start();
+
+        const dump = world.agent.query({ path: 'UI' });
+        expect(dump.mobility.enumList).toEqual([
+            { name: 'Static', value: 0 },
+            { name: 'Stationary', value: 1 },
+            { name: 'Movable', value: 2 },
+            { name: 'Extra', value: 3 },
+        ]);
+    });
+});
+
+// ---- 组件文档链接(Inspector book 图标,/scene/component-help) ------------------
+
+describe('preview-inspect 组件文档链接(editor.help)', () => {
+    const LABEL_HELP = 'https://docs.cocos.com/creator/4.0/manual/zh/ui-system/components/editor/label.html';
+
+    it('help 命中 CLI 下发的链接表(按短类名索引),未命中为空串', async () => {
+        const world = createWorld({ componentHelp: { Label: LABEL_HELP } });
+        const ui = world.node('UI', world.scene);
+        ui.addComponent(StubLabel);
+        ui.addComponent(StubBadge);
+        world.start();
+        await (world.agent as any)._loadComponentHelp();
+
+        const dump = world.agent.query({ path: 'UI' });
+        expect(dump.__comps__[0].editor.help).toBe(LABEL_HELP);
+        expect(dump.__comps__[1].editor.help).toBe('');
+    });
+
+    it('路由失败时静默降级(无 help、不阻断 dump),清 pending 允许重试', async () => {
+        const world = createWorld(); // 默认桩:该路由 404
+        const ui = world.node('UI', world.scene);
+        ui.addComponent(StubLabel);
+        world.start();
+        await (world.agent as any)._loadComponentHelp();
+
+        const dump = world.agent.query({ path: 'UI' });
+        expect(dump.__comps__[0].editor.help).toBe('');
+        expect((world.agent as any)._componentHelpPromise).toBe(null);
+    });
+
+    it('链接表晚到时对已选中节点补发 node:change,Inspector 重取 dump 后亮出 book 图标', async () => {
+        const world = createWorld({ componentHelp: { Label: LABEL_HELP } });
+        const ui = world.node('UI', world.scene);
+        ui.addComponent(StubLabel);
+        world.start();
+        // start() 的预取仍在途时就选中节点:链接表到达后必须补发一次 node:change。
+        world.agent.select({ path: 'UI' });
+        await (world.agent as any)._loadComponentHelp();
+
+        const changes = world.eventsOf('node:change');
+        expect(changes.length).toBeGreaterThan(0);
+        expect(changes[changes.length - 1].node.__comps__[0].editor.help).toBe(LABEL_HELP);
     });
 });
 

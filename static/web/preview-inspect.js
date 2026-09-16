@@ -39,6 +39,13 @@ const PREVIEW_UNDO_STACK_LIMIT = 100;
 const NODE_TYPE_CONFIG_ROUTE = '/scene/node-type-config';
 
 /**
+ * 组件文档链接表(组件短类名 → URL)的只读路由。
+ * 运行时构建里 @help 是空装饰器(`_registerEditorProps` 的 help 分支仅 EDITOR 生效,ctor._help 恒空),
+ * 表只能由 CLI 从引擎 i18n(ENGINE.help.cc)读出——与 node-type-config 同属「前端拿不到的编辑态数据」。
+ */
+const COMPONENT_HELP_ROUTE = '/scene/component-help';
+
+/**
  * 脚本 uuid 形状识别(逐字对齐 editor-extends 的 utils/uuid:Reg_Uuid / Reg_NormalizedUuid /
  * Reg_CompressedUuid / Reg_CompressedSubAssetUuid)。
  *
@@ -62,6 +69,36 @@ const UUID_ASCII_TO_64 = (() => {
 	}
 	return table;
 })();
+
+/**
+ * mobility 枚举兜底清单。MobilityMode **没有**挂到 cc 命名空间(node-enum.ts 只把 TransformBit 挂到
+ * legacyCC.internal),编辑态是靠直接 import 引擎模块拿枚举的,预览运行时 cc.MobilityMode 恒 undefined。
+ * 取值逐字对齐 node-enum.ts:95-113(Static/Stationary/Movable = 0/1/2)——这是引擎序列化约定,不会漂移。
+ */
+const FALLBACK_MOBILITY_ENUM_LIST = Object.freeze([
+	Object.freeze({ name: 'Static', value: 0 }),
+	Object.freeze({ name: 'Stationary', value: 1 }),
+	Object.freeze({ name: 'Movable', value: 2 }),
+]);
+
+/**
+ * 组件 reset 的跳过键,对齐编辑态 resetComponent 跳过清单(component/index.ts skipCompProps)
+ * 与快照恢复黑名单(restore-policy.ts COMPONENT_SNAPSHOT_RESTORE_SKIP_KEYS)的并集。
+ * 身份/编辑器内部字段绝不能按「默认值」写回:重置 _objFlags 会因缺 onEnable 标记导致 onDisable
+ * 不被调用、后续 remove 不掉(编辑态同位置注释的原话)。
+ */
+const RESET_COMPONENT_SKIP_KEYS = Object.freeze([
+	'name',
+	'node',
+	'uuid',
+	'enabled',
+	'_name',
+	'_enabled',
+	'_objFlags',
+	'_isOnLoadCalled',
+	'__scriptAsset',
+	'__eventTargets',
+]);
 
 /** 内置 Canvas Prefab(与编辑态 checkCanvasRequired 的硬编码 uuid 一致)。 */
 const CANVAS_PREFAB_UUID_2D = '4c33600e-9ca9-483b-b734-946008261697';
@@ -199,6 +236,9 @@ class PreviewInspect {
 		/** `/scene/node-type-config` 的响应缓存 */
 		this._nodeTypeConfig = null;
 		this._nodeTypeConfigPromise = null;
+		/** `/scene/component-help` 的响应缓存(组件短类名 → 文档 URL);null 表示尚未加载 */
+		this._componentHelp = null;
+		this._componentHelpPromise = null;
 		/** uuid → 已加载的内置 Prefab 资源 */
 		this._prefabCache = new Map();
 	}
@@ -208,6 +248,19 @@ class PreviewInspect {
 	/** @param {(type: string, payload?: unknown) => void} sink */
 	start(sink) {
 		this._sink = typeof sink === 'function' ? sink : null;
+		// 组件文档链接表尽力预取:通常在首次 query 前已就位;晚到时对已选中节点补发一次
+		// node:change,让 Inspector 重取 dump、补上 book 图标(纯增强,失败静默降级为无图标)。
+		this._loadComponentHelp().then(map => {
+			if (!map || this._disposed || !this._sink) {
+				return;
+			}
+			for (const nodePath of this._selection) {
+				const node = nodePath === '' ? this._getScene() : this._pathToNode.get(nodePath);
+				if (node && this._isValid(node) && !this._isScene(node)) {
+					this._afterWrite(node, nodePath, '__comps__');
+				}
+			}
+		});
 		this._snapshot = this._takeSnapshot();
 		this._scheduleScan();
 	}
@@ -235,6 +288,8 @@ class PreviewInspect {
 		this._prefabCache.clear();
 		this._nodeTypeConfig = null;
 		this._nodeTypeConfigPromise = null;
+		this._componentHelp = null;
+		this._componentHelpPromise = null;
 	}
 
 	// ---- 查询 --------------------------------------------------------------
@@ -726,9 +781,32 @@ class PreviewInspect {
 	}
 
 	/**
+	 * reset 写回后同步渲染模型。__props__ 的键是**序列化字段名**(_mesh 这类私有名),裸写会绕过
+	 * 公开 setter(MeshRenderer 的 set mesh 才负责 _updateModels/_attachToScene);编辑态在恢复后统一靠
+	 * resetInEditor/onRestore 重建模型(component/index.ts、command-utils-shared.ts),预览不对齐的话
+	 * 场景会继续用旧 mesh/旧材质渲染(Reset Component 后立方体变品红且不消失)。
+	 * 单个钩子失败只告警,不推翻 reset 结果(模型同步是增强,不是 reset 成败条件)。
+	 */
+	_syncComponentModel(comp) {
+		for (const hook of ['resetInEditor', 'onRestore']) {
+			if (typeof comp[hook] === 'function') {
+				try {
+					comp[hook]();
+				} catch (error) {
+					this._emit('view:log', {
+						level: 'warn',
+						message: `[preview-inspect] ${hook} failed after reset on '${this._className(comp.constructor)}': ${(error && error.message) || error}`,
+					});
+				}
+			}
+		}
+	}
+
+	/**
 	 * M5 组件 reset(component.reset):new 临时实例取默认值写回(对齐编辑态 reset 语义),
-	 * 跳过 enabled/uuid/name/__scriptAsset 与 readonly 属性;整段合成单步 undo;
-	 * 结束 `_afterWrite` 回推 node:change。params = `{ path }`,path 为组件 target 路径。
+	 * 跳过 RESET_COMPONENT_SKIP_KEYS 与 readonly 属性;整段合成单步 undo;写回后经
+	 * `_syncComponentModel` 重建渲染模型;结束 `_afterWrite` 回推 node:change。
+	 * params = `{ path }`,path 为组件 target 路径。
 	 * @param {{ path?: string } | undefined} params
 	 */
 	resetComponent(params) {
@@ -750,7 +828,7 @@ class PreviewInspect {
 		const snapshot = [];
 		this._asOneCommand('Reset Component', () => {
 			for (const key of keys) {
-				if (key === 'enabled' || key === 'uuid' || key === 'name' || key === '__scriptAsset') {
+				if (RESET_COMPONENT_SKIP_KEYS.includes(key)) {
 					continue;
 				}
 				let attrs = {};
@@ -776,20 +854,116 @@ class PreviewInspect {
 					for (const [key, old] of snapshot) {
 						try { comp[key] = old; } catch { /* 忽略 */ }
 					}
+					this._syncComponentModel(comp);
 				},
 				redo: () => {
 					if (!this._isValid(comp)) { return; }
 					for (const [key] of snapshot) {
 						try { comp[key] = this._clonePropValue(fresh[key]); } catch { /* 忽略 */ }
 					}
+					this._syncComponentModel(comp);
 				},
 			});
 		});
+		this._syncComponentModel(comp);
 		if (node && this._isValid(node) && !this._isScene(node)) {
 			const comps = (node.components) || node._components || [];
 			const index = comps.indexOf(comp);
 			this._afterWrite(node, this._pathOfNode(node), index >= 0 ? `__comps__.${index}` : '__comps__');
 		}
+		return undefined;
+	}
+
+	/**
+	 * 节点/组件单属性 reset(node.reset-property):Inspector 节点菜单的 Reset Node / Reset Position…,
+	 * 以及属性级 reset。params = `{ nodePath, path }`,path 为节点属性('position'/'rotation'/'scale'/'mobility')
+	 * 或组件属性子路径('__comps__.{i}.{key}')。
+	 * 默认值语义对齐编辑态 decode.ts resetProperty:节点 transform 用引擎约定默认
+	 * (position/rotation → 零,scale → 1,mobility → Static),组件属性 new 临时实例读初始值
+	 * (与 resetComponent 同源);每次调用合成单步 undo,结束回推 node:change。
+	 * @param {{ nodePath?: string, path?: string } | undefined} params
+	 */
+	resetNodeProperty(params) {
+		this._rebuildIndex();
+		const p = params || {};
+		const nodePath = stripLeadingSlashes(p.nodePath || '');
+		const rawPath = p.path || '';
+		const node = nodePath === '' ? this._getScene() : this._pathToNode.get(nodePath);
+		if (!node || !this._isValid(node)) {
+			throw new Error(`preview reset-property: node not found at '${p.nodePath || ''}'`);
+		}
+		const compMatch = /^__comps__\.(\d+)\.(.+)$/.exec(rawPath);
+		if (compMatch) {
+			// 组件单属性:快照该键旧值,new 临时实例取该键默认写回(同 resetComponent 的单键版)。
+			const comps = (node.components) || node._components || [];
+			const comp = comps[Number(compMatch[1])];
+			if (!comp || !this._isValid(comp)) {
+				throw new Error(`preview reset-property: component[${compMatch[1]}] not found on '${nodePath}'`);
+			}
+			const key = compMatch[2];
+			const ctor = comp.constructor;
+			let fresh;
+			try {
+				fresh = new ctor();
+			} catch (e) {
+				throw new Error(`preview reset-property: cannot instantiate '${this._className(ctor) || 'cc.Component'}' for defaults: ${(e && e.message) || e}`);
+			}
+			const oldValue = this._clonePropValue(comp[key]);
+			const defaultValue = this._clonePropValue(fresh[key]);
+			this._asOneCommand('Reset Property', () => {
+				comp[key] = this._clonePropValue(defaultValue);
+				this._pushCommand({
+					label: 'Reset Property',
+					undo: () => {
+						if (!this._isValid(comp)) { return; }
+						try { comp[key] = this._clonePropValue(oldValue); } catch { /* 忽略 */ }
+						this._syncComponentModel(comp);
+					},
+					redo: () => {
+						if (!this._isValid(comp)) { return; }
+						try { comp[key] = this._clonePropValue(defaultValue); } catch { /* 忽略 */ }
+						this._syncComponentModel(comp);
+					},
+				});
+			});
+			// 单属性裸写同样绕过 setter(如 _mesh),写回后重建渲染模型,理由同 resetComponent。
+			this._syncComponentModel(comp);
+			this._afterWrite(node, nodePath, rawPath);
+			return undefined;
+		}
+		// 节点属性:transform 用引擎约定默认(对齐编辑态 nodeSpecialPropertyDefaultValue,
+		// 注意 dump path 是 'position'/'rotation'/'scale',真实存储是 _lpos/eulerAngles/_lscale,
+		// 写入统一走 _applyValue 的 setter 分支);其余属性读新实例初始值,取不到默认就拒绝。
+		let defaultDump;
+		if (rawPath === 'position' || rawPath === 'rotation') {
+			defaultDump = { type: 'cc.Vec3', value: { x: 0, y: 0, z: 0 } };
+		} else if (rawPath === 'scale') {
+			defaultDump = { type: 'cc.Vec3', value: { x: 1, y: 1, z: 1 } };
+		} else {
+			let freshNode;
+			try {
+				freshNode = new this._cc.Node();
+			} catch (e) {
+				throw new Error(`preview reset-property: cannot instantiate cc.Node for defaults: ${(e && e.message) || e}`);
+			}
+			const value = freshNode[rawPath];
+			if (value === undefined) {
+				throw new Error(`preview reset-property: no default for '${rawPath}' on '${nodePath}'`);
+			}
+			defaultDump = { type: undefined, value: this._clonePropValue(value) };
+		}
+		// 旧值按 dump 同形快照(Vec3 → 平铺对象),undo/redo 复用 _applyValue 的 setter 路径写回。
+		const current = rawPath === 'rotation' ? node.eulerAngles : node[rawPath];
+		const oldPlain = current && typeof current === 'object' ? this._valueTypeToPlain(current) : current;
+		this._asOneCommand('Reset Property', () => {
+			this._applyValue(node, rawPath, defaultDump);
+			this._pushCommand({
+				label: 'Reset Property',
+				undo: () => { if (this._isValid(node)) { this._applyValue(node, rawPath, { type: defaultDump.type, value: oldPlain }); } },
+				redo: () => { if (this._isValid(node)) { this._applyValue(node, rawPath, defaultDump); } },
+			});
+		});
+		this._afterWrite(node, nodePath, rawPath);
 		return undefined;
 	}
 
@@ -1779,6 +1953,39 @@ class PreviewInspect {
 		return config;
 	}
 
+	/**
+	 * 拉取并缓存 CLI 输出的组件文档链接表(只读路由,当前语言)。
+	 * 与 _loadNodeTypeConfig 同模式;区别在语义等级——文档链接是纯增强,失败**静默**降级为
+	 * 「无 book 图标」(清掉 pending,下次 dump 仍可重试),绝不影响 dump 主流程。
+	 */
+	_loadComponentHelp() {
+		if (this._componentHelp) {
+			return Promise.resolve(this._componentHelp);
+		}
+		if (!this._serverURL) {
+			return Promise.resolve(null);
+		}
+		if (!this._componentHelpPromise) {
+			const url = `${this._serverURL}${COMPONENT_HELP_ROUTE}`;
+			this._componentHelpPromise = fetch(url)
+				.then(response => {
+					if (!response.ok) {
+						throw new Error(`HTTP ${response.status}`);
+					}
+					return response.json();
+				})
+				.then(json => {
+					this._componentHelp = json && typeof json === 'object' ? json : {};
+					return this._componentHelp;
+				})
+				.catch(() => {
+					this._componentHelpPromise = null;
+					return null;
+				});
+		}
+		return this._componentHelpPromise;
+	}
+
 	/** 拉取并缓存 CLI 输出的 NODE_CONFIGS(只读路由);失败时清掉 pending 以便下次重试。 */
 	_loadNodeTypeConfig() {
 		if (this._nodeTypeConfig) {
@@ -2281,7 +2488,11 @@ class PreviewInspect {
 		return list;
 	}
 
-	/** 从 cc.MobilityMode 生成 mobility 枚举清单(对齐 encode.ts:77-79)。运行时取不到则返回空数组。 */
+	/**
+	 * 从 cc.MobilityMode 生成 mobility 枚举清单(对齐 encode.ts:80-82)。
+	 * 该枚举没挂 cc 命名空间(见 FALLBACK_MOBILITY_ENUM_LIST 注释),运行时取不到时回退兜底清单,
+	 * 保证预览态与编辑态一样渲染三值下拉,而不是退化成 Number 输入框。
+	 */
 	_buildMobilityEnumList() {
 		const MobilityMode = this._cc.MobilityMode;
 		const list = [];
@@ -2293,7 +2504,7 @@ class PreviewInspect {
 				}
 			}
 		}
-		return list;
+		return list.length ? list : FALLBACK_MOBILITY_ENUM_LIST.map(item => ({ ...item }));
 	}
 
 	/** 把 meta 中已定义的字段合并进 IProperty(用于给内置属性补 enumList/default/displayName 等)。 */
@@ -2340,10 +2551,13 @@ class PreviewInspect {
 
 	/** 组件 editor 附加数据(尽力而为:运行时能拿到 icon/help 就给,拿不到给空串;对齐 encode.ts:352-363)。 */
 	_componentEditor(ctor, comp) {
+		// 运行时构建里 ctor._help 恒空(@help 是空装饰器),兜底查 CLI 下发的文档链接表(按短类名索引)。
+		const shortName = this._className(ctor).replace(/^cc\./, '');
+		const helpFromMap = (shortName && this._componentHelp && this._componentHelp[shortName]) || '';
 		return {
 			inspector: (ctor && ctor._inspector) || '',
 			icon: (ctor && ctor._icon) || '',
-			help: (ctor && ctor._help) || '',
+			help: (ctor && ctor._help) || helpFromMap,
 			_showTick:
 				typeof comp.start === 'function' ||
 				typeof comp.update === 'function' ||
@@ -2357,7 +2571,8 @@ class PreviewInspect {
 
 	_dumpNode(node, mgrPath, includeComponents) {
 		const comps = (node.components) || node._components || [];
-		// layer/mobility 尽量对齐编辑态的枚举下拉;运行时取不到枚举清单时回退成普通 Number 字段,避免空下拉。
+		// layer/mobility 对齐编辑态的枚举下拉;layer 运行时取不到清单时回退普通 Number 字段避免空下拉,
+		// mobility 有 FALLBACK_MOBILITY_ENUM_LIST 兜底(MobilityMode 不在 cc 命名空间上),恒为三值下拉。
 		const layerProp = this._layersEnumList.length
 			? this._withMeta(this._prop(node.layer, 'Enum'), { enumList: this._layersEnumList, default: 1073741824, displayName: 'Layer', animatable: false })
 			: this._withMeta(this._prop(node.layer, 'Number'), { displayName: 'Layer', animatable: false });

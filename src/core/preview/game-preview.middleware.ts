@@ -274,6 +274,29 @@ export const gamePreviewResourceRoutes = [
             }
         },
     },
+    {
+        /**
+         * 预览态 Inspector 组件「开发者文档」按钮所需的「组件短类名 → 文档 URL」表（只读）。
+         *
+         * 编辑态 dump 的 `editor.help` 来自 `ctor._help`（@help 装饰器写入）经 i18n 翻译；
+         * 但运行时构建里 @help 是空装饰器，preview iframe 里的 inspect agent
+         * （static/web/preview-inspect.js）拿不到，只能由 CLI 从引擎 i18n（ENGINE.help.cc）
+         * 按当前语言导出——与 node-type-config 同属「前端拿不到的编辑态数据」只读路由。
+         * 引擎 i18n 未加载（引擎未初始化）时退化为空表，agent 侧按「无 book 图标」降级。
+         */
+        url: '/scene/component-help',
+        async handler(_req: Request, res: Response, next: NextFunction) {
+            try {
+                const bundle = i18n.getBundle();
+                const lang = bundle.data[bundle.lang] ? bundle.lang : 'en';
+                const table = bundle.data[lang]?.ENGINE?.help?.cc ?? {};
+                res.set('Cache-Control', 'no-store');
+                res.status(200).json(table);
+            } catch (err) {
+                next(err);
+            }
+        },
+    },
 ];
 
 export default {
