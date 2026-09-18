@@ -91,6 +91,10 @@ export class PreviewPlayService extends BaseService<IPreviewPlayEvents> implemen
     private readonly _hiddenEditorCameraNodes: Set<Node> = new Set();
     /** pause 态被下屏的游戏相机（enabled=false），恢复播放时重新启用。 */
     private readonly _parkedGameCameras: Set<any> = new Set();
+    /** pause 态被临时改成 GAME_VIEW 的编辑器相机 → 原 usage（退出暂停时还原）。 */
+    private readonly _profilerRetargetedCameras: Map<any, number> = new Map();
+    /** 暂停态被摘下的 profiler 统计对象（冻结中），退出暂停时还原。 */
+    private _frozenProfilerStats: unknown;
     /** play 态的 Operation 重定向/短路监听（转发游戏输入 + 防止编辑器相机/gizmo 响应）。 */
     private readonly _inputGateHandlers: Map<OperationEvent, (event: unknown) => boolean> = new Map();
 
@@ -230,6 +234,7 @@ export class PreviewPlayService extends BaseService<IPreviewPlayEvents> implemen
         }
         this._unregisterDirectorEvents();
         this.removePlayInputGate();
+        this.setProfilerCameraUsage(false);
         this._hiddenEditorCameraNodes.clear();
         this._parkedGameCameras.clear();
         this.setPhysicsEnabled(false);
@@ -296,6 +301,7 @@ export class PreviewPlayService extends BaseService<IPreviewPlayEvents> implemen
 
     /** 播放态：编辑器相机下屏（enabled=false + 节点隐藏 + 挪到 tempWindow），游戏相机挂回 mainWindow。 */
     public hideEditorCamera(): void {
+        this.setProfilerCameraUsage(false);
         const root = (director as any).root;
         const scene = director.getScene() as any;
         const renderScene = scene?.renderScene || scene?._renderScene;
@@ -364,6 +370,39 @@ export class PreviewPlayService extends BaseService<IPreviewPlayEvents> implemen
         try { Service.Camera?.setRulerVisible?.(true); } catch { /* Camera 未注册时忽略 */ }
     }
 
+    /**
+     * 暂停态的 stats 面板可见性开关：引擎只在 GAME / GAME_VIEW usage 的相机上开 profiler pass
+     * （default-renderpipeline: `enableProfiler = ppl.profiler && isGameView`），暂停切回编辑器相机后
+     * 恒不绘制。这里把「走全管线且上屏的编辑器相机」临时标为 GAME_VIEW，退出暂停时还原。
+     */
+    private setProfilerCameraUsage(enabled: boolean): void {
+        if (!enabled) {
+            this._profilerRetargetedCameras.forEach((usage, camera) => {
+                try { camera.cameraUsage = usage; } catch { /* 相机已销毁时忽略 */ }
+            });
+            this._profilerRetargetedCameras.clear();
+            return;
+        }
+        if (this._profilerRetargetedCameras.size > 0) {
+            return;
+        }
+        const CameraUsage = (renderer as any)?.scene?.CameraUsage;
+        if (!CameraUsage) {
+            return;
+        }
+        const scene = director.getScene() as any;
+        const renderScene = scene?.renderScene || scene?._renderScene;
+        const cameras: any[] = renderScene?.cameras ? [...renderScene.cameras] : [];
+        for (const camera of cameras) {
+            // 只挑走全管线的编辑器相机：引擎要求 visibility 含 DEFAULT（enableFullPipeline），否则设了也不出面板。
+            if (!camera || !isEditorCamera(camera) || !(camera.visibility & Layers.Enum.DEFAULT)) {
+                continue;
+            }
+            this._profilerRetargetedCameras.set(camera, camera.cameraUsage);
+            try { camera.cameraUsage = CameraUsage.GAME_VIEW; } catch { /* ignore */ }
+        }
+    }
+
     // ---- 内部 -------------------------------------------------------------
 
     private _registerDirectorEvents(): void {
@@ -389,6 +428,7 @@ export class PreviewPlayService extends BaseService<IPreviewPlayEvents> implemen
     /** 进入暂停视图：编辑器相机 + 首次对焦 + 还原场景光 + 恢复编辑器 tick。 */
     private enterPauseView(): void {
         this.showEditorCamera();
+        this.setProfilerCameraUsage(true);
         if (this._firstPause) {
             this._firstPause = false;
             try { Service.Camera?.defaultFocus(this._scene?.uuid ?? ''); } catch { /* ignore */ }
@@ -396,6 +436,7 @@ export class PreviewPlayService extends BaseService<IPreviewPlayEvents> implemen
         try { Service.SceneView?.setSceneLightOn(this._sceneLightOn); } catch { /* ignore */ }
         try {
             Service.Engine.resume();
+            // usage 改动需一帧重绘才落到 pass 配置上；暂停态按需渲染，这里显式催一帧。
             void Service.Engine.repaintInEditMode?.();
         } catch { /* ignore */ }
     }
