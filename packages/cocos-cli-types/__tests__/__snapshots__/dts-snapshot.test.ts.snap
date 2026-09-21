@@ -6963,6 +6963,7 @@ export declare interface INode {
 export declare interface INodeDumpOptions {
     includeChildren?: boolean;
     includeComponents?: boolean;
+    includeLightProbeData?: boolean;
 }
 export declare interface INodeService extends IServiceEvents {
     serialize(params: ISerializeNodesParams): Promise<SerializedNodeData>;

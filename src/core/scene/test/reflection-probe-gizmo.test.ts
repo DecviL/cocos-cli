@@ -4,6 +4,10 @@ jest.mock('cc', () => {
     class Vec3 {
         static ZERO = new Vec3();
         constructor(public x = 0, public y = 0, public z = 0) {}
+        clone() { return new Vec3(this.x, this.y, this.z); }
+        static divide(out: Vec3, a: Vec3, b: Vec3) { out.x = a.x / b.x; out.y = a.y / b.y; out.z = a.z / b.z; return out; }
+        static add(out: Vec3, a: Vec3, b: Vec3) { out.x = a.x + b.x; out.y = a.y + b.y; out.z = a.z + b.z; return out; }
+        static strictEquals(a: Vec3, b: Vec3) { return a.x === b.x && a.y === b.y && a.z === b.z; }
         static multiplyScalar(out: Vec3, value: Vec3, scale: number) {
             Object.assign(out, { x: value.x * scale, y: value.y * scale, z: value.z * scale }); return out;
         }
@@ -12,7 +16,7 @@ jest.mock('cc', () => {
         isValid = true; active = true; layer = 0; _objFlags = 0; children: Node[] = [];
         parent: Node | null = null; name = ''; worldPosition = new Vec3();
         getComponent = jest.fn();
-        setWorldPosition = jest.fn((value: Vec3) => { this.worldPosition = { ...value }; });
+        setWorldPosition = jest.fn((value: Vec3) => { this.worldPosition = new Vec3(value.x, value.y, value.z); });
         getWorldPosition() { return this.worldPosition; }
         getWorldScale() { return new Vec3(1, 1, 1); }
         getWorldRotation() {}
@@ -123,4 +127,40 @@ describe('Reflection probe preview sphere', () => {
             expect(probe.previewSphere).toBe(sphere);
         } finally { warning.mockRestore(); }
     });
+});
+
+it('records before synchronous size changes and skips repeated, unchanged and clamped inputs', () => {
+    let size = new Vec3(2, 2, 2);
+    const writes: Vec3[] = [], before: Vec3[] = [];
+    const target = {
+        node: { getWorldScale: () => new Vec3(2, 1, 1) },
+        get size() { return size; },
+        set size(value: Vec3) { size = value.clone(); writes.push(size); },
+    } as ReflectionProbe;
+    const gizmo = new SelectGizmo(target);
+    const delta = new Vec3();
+    // Keep the real GizmoBase used by the preview lifecycle tests; stub only
+    // this instance's recording/notification boundaries for the drag assertion.
+    Object.assign(gizmo, {
+        _isInitialized: true,
+        _controller: { updated: true, getDeltaSize: () => delta.clone() },
+        getCompPropPath: jest.fn(() => 'size'),
+        onControlUpdate: jest.fn(),
+        onComponentChanged: jest.fn(),
+    });
+    (gizmo.onControlUpdate as jest.Mock).mockImplementation(() => before.push(size.clone()));
+    gizmo.onControllerMouseDown();
+    gizmo.onControllerMouseMove();
+    expect(writes).toHaveLength(0);
+    delta.x = 4;
+    for (let i = 0; i < 100; i++) gizmo.onControllerMouseMove();
+    expect(writes).toEqual([new Vec3(4, 2, 2)]);
+    expect(before).toEqual([new Vec3(2, 2, 2)]);
+    expect((gizmo as any).onComponentChanged).toHaveBeenCalledTimes(1);
+    delta.x = -100;
+    gizmo.onControllerMouseMove();
+    delta.x = -200;
+    gizmo.onControllerMouseMove();
+    expect(writes).toEqual([new Vec3(4, 2, 2), new Vec3(0, 2, 2)]);
+    expect(target.size).toEqual(new Vec3(0, 2, 2));
 });
