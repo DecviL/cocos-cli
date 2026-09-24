@@ -11,11 +11,11 @@
  *   cc.GAME_VIEW 由 engine-bootstrap 在引擎模块求值后显式置位）：组件生命周期、物理、输入派发均按运行态执行；
  * - play：隐藏编辑器相机（游戏相机上屏 mainWindow），Engine.pause() 停编辑器 tick，
  *   director/game.resume() 由游戏主循环驱动帧；Operation 以 Preview 优先级短路，
- *   编辑器相机/gizmo 不响应画布输入（游戏输入走引擎原生 DOM 监听 → input._frameDispatchEvents）；
+ *   编辑器相机/gizmo 不响应画布输入，画布事件改由本服务转发到 input._dispatch*（见 INPUT_REDIRECT）；
  * - pause：director/game.pause()，showEditorCamera() 切回编辑器相机，Engine.resume()
  *   恢复编辑器 tick —— 同一运行场景以「编辑态」呈现，gizmo/框选/相机漫游原生可操作
  *   （对齐 Creator PreviewPlay.pause(true) + PreviewSceneFacade.isInputRedirected 语义）；
- *   同时把 cc.input 的帧派发替换为清空，游戏脚本在暂停期间收不到输入（Creator 同款语义）；
+ *   输入门控已卸载且游戏 tick 停摆，游戏脚本在暂停期间收不到输入（Creator 同款语义）；
  * - step：仅暂停态有效，director.resume() → tick(1/fps) → pause()，前进一帧后保持暂停，
  *   编辑器 tick 持续渲染，视图即时反映步进结果（对齐 Creator PreviewPlay.step）；
  * - resume（pause(false)）：同一 director 继续（不重载场景、不重启引擎），
@@ -52,6 +52,10 @@ const EDITOR_MASK = Layers.makeMaskInclude([
  * 游戏只能经 input._dispatch* 入口收输入；故 play 态把画布 Operation 事件转发到对应
  * dispatch 方法，并返回 false 短路编辑器侧处理（相机/gizmo/框选不响应游戏输入）。
  * dblclick 无对应 dispatch（Creator 亦不转发），仅短路。
+ *
+ * 坐标契约：引擎 MouseInputSource._getLocation 自己减 canvas 偏移并乘 DPR，因此转发的
+ * clientX/clientY 必须是 DOM 页面坐标（input-bridge 只对 x/y、moveDelta* 做渲染缓冲换算，
+ * clientX/clientY、movementX/movementY 保留 DOM 空间）；传渲染缓冲坐标会被二次换算而整体偏移。
  */
 const INPUT_REDIRECT: ReadonlyArray<readonly [OperationEvent, string | undefined]> = [
     ['mousedown', '_dispatchMouseDownEvent'],
@@ -107,12 +111,18 @@ export class PreviewPlayService extends BaseService<IPreviewPlayEvents> implemen
     };
 
     private readonly _onSceneLaunch = (scene: Scene) => {
-        // 运行期脚本切场景：play 态重新登记编辑实体并广播 open（Hierarchy/服务跟随新场景）、重挂相机。
+        // 运行期脚本切场景：重新登记编辑实体并广播 open（Hierarchy/Inspector/服务跟随新场景），
+        // 再按当前状态恢复取景。暂停态同样要处理：异步加载可能在暂停后才完成，step 也可能触发
+        // 切场景——只更新 _scene 会让 Editor 仍指向旧场景，恢复播放后视图与运行场景脱节。
         this._scene = scene;
         if (this._state === 'play') {
             this.adoptRuntimeScene(undefined);
             ServiceEvents.emit('editor:open', scene);
             this.hideEditorCamera();
+        } else if (this._state === 'pause') {
+            this.adoptRuntimeScene(undefined);
+            ServiceEvents.emit('editor:open', scene);
+            this.enterPauseView();
         }
     };
 
