@@ -535,10 +535,6 @@ export type IPublicNodeService = Omit<INodeService, keyof IServiceEvents |
     'duplicate' |
     'cut' |
     'preflightCreate' |
-    'beginCreateDrag' |
-    'updateCreateDrag' |
-    'commitCreateDrag' |
-    'cancelCreateDrag' |
     'queryClipboardState' |
     'moveArrayElement' |
     'removeArrayElement' |

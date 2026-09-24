@@ -45,6 +45,7 @@ import { Canvas, CCClass, CCObject, Component, director, Node, Prefab, Quat, UIT
 import { createNodeByAsset, createShouldHideInHierarchyCanvasNode, loadAny, queryCanvasRequiredByAsset } from './node/node-create';
 import { getUICanvasNode, getUITransformParentNode, hasOneKindOfComponent, setLayer } from './node/node-utils';
 import { NodeUndoHelper } from './node/node-undo';
+import { NodeCreateDragManager } from './node/node-create-drag';
 import { isUndoApplying } from './undo/applying-state';
 import { prefabUtils } from './prefab/utils';
 import { sceneUtils } from './scene/utils';
@@ -121,44 +122,30 @@ export class NodeService extends BaseService<INodeEvents> implements INodeServic
     private readonly _preflightTokens = new Map<string, ICreatePreflightToken>();
     private _preflightTokenSequence = 0;
 
-    async beginCreateDrag(params: IBeginCreateDragParams): Promise<BeginCreateDragResult> {
-        // TODO: 登记拖拽会话，解析创建目标并准备临时节点
-        console.log('[Node.beginCreateDrag]', params);
+    private readonly _createDrag = new NodeCreateDragManager({
+        resolveCanvasTransaction: (workMode, canvasRequired, parent, position, prefabCanvasHandling) =>
+            this._resolveCanvasRequiredTransaction(workMode, canvasRequired, parent, position, prefabCanvasHandling),
+        collectSceneNodeUuidsForUndo: () => this._collectSceneNodeUuidsForUndo(),
+        beginPrefabCanvasUndoCapture: beforeUuids => this._beginPrefabCanvasUndoCapture(beforeUuids),
+        endPrefabCanvasUndoCapture: () => this._endPrefabCanvasUndoCapture(),
+        recordCreateNodeCommand: (beforeUuids, paths, records) =>
+            this._recordCreateNodeCommand(beforeUuids, paths, records),
+    });
 
-        return {
-            ok: false,
-            error: { code: 'UNSUPPORTED', message: 'Scene drag creation is not implemented yet.' },
-        };
+    async beginCreateDrag(params: IBeginCreateDragParams): Promise<BeginCreateDragResult> {
+        return this._createDrag.begin(params);
     }
 
     async updateCreateDrag(params: IUpdateCreateDragParams): Promise<UpdateCreateDragResult> {
-        // TODO: 记录最新鼠标位置，计算落点并更新临时节点
-        console.log('[Node.updateCreateDrag]', params);
-
-        return {
-            ok: false,
-            error: { code: 'UNSUPPORTED', message: 'Scene drag creation is not implemented yet.' },
-        };
+        return this._createDrag.update(params);
     }
 
     async commitCreateDrag(params: ICommitCreateDragParams): Promise<CommitCreateDragResult> {
-        // TODO: 处理 Canvas 确认，提交本批节点并记录 Undo，失败时恢复本批改动
-        console.log('[Node.commitCreateDrag]', params);
-
-        return {
-            ok: false,
-            error: { code: 'UNSUPPORTED', message: 'Scene drag creation is not implemented yet.' },
-        };
+        return this._createDrag.commit(params);
     }
 
     async cancelCreateDrag(params: ICancelCreateDragParams): Promise<CancelCreateDragResult> {
-        // TODO: 结束未提交会话，清理其临时节点和辅助对象
-        console.log('[Node.cancelCreateDrag]', params);
-
-        return {
-            ok: false,
-            error: { code: 'UNSUPPORTED', message: 'Scene drag creation is not implemented yet.' },
-        };
+        return this._createDrag.cancel(params);
     }
 
     async serialize(params: ISerializeNodesParams): Promise<SerializedNodeData> {
@@ -1282,10 +1269,17 @@ export class NodeService extends BaseService<INodeEvents> implements INodeServic
     }
 
     public onEditorClosed() {
+        // 场景关闭/重载前结束拖拽预览，避免临时节点残留到下一个场景
+        void this._createDrag.cancelActive('disposed');
         // nodeMgr 清理 EditorExtends.Component 缓存前，先停止组件事件转发。
         Service.Component.unregisterCompMgrEvents();
         nodeMgr.onEditorClosed();
         this._cutUuids = [];
+    }
+
+    public onEditorDisposed() {
+        // 服务级销毁：退订生命周期事件并清空会话
+        this._createDrag.dispose();
     }
 
     public async previewSetProperty(options: ISetPropertyOptions): Promise<boolean> {
