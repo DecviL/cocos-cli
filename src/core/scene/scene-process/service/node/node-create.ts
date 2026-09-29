@@ -9,6 +9,7 @@ import {
     assetManager,
     Node,
     Layers,
+    Camera,
     Canvas,
     UITransform,
     Scene,
@@ -405,6 +406,12 @@ export async function createShouldHideInHierarchyCanvasNode(scene: Scene, workMo
             cameraNode.setParent = () => {
                 console.error('It is forbidden to modify the parent node of the internal camera node.');
             };
+            // 预览 Canvas 只是编辑期的 UI 管线脚手架, 其自带相机不能参与主窗口渲染:
+            // 一旦留在渲染场景里, 场景会被第二台相机重复绘制(UI/粒子出现两份且位置随投影不同而偏移)。
+            // 正常路径由 CameraService.onComponentAdded -> detachNewSceneCamera 摘除,
+            // 但 instantiate() 走 new ctor() 而非 Node.addComponent(), 不会触发 component:added,
+            // 因此这里显式摘除, 与 CameraService._detachSceneCameras 保持一致。
+            cameraNode.getComponent(Camera)?.camera?.detachCamera();
         }
 
         return canvasNode;
