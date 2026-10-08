@@ -639,6 +639,9 @@ export class NodeCreateDragManager {
                 entry.root.setWorldPosition(world);
             }
         }
+
+        // 预览节点不会触发普通节点的重绘监听，更新位置后主动刷新画布
+        void Service.Engine.repaintInEditMode();
     }
 
     private _collectExcludeNodes(session: DragSession): Node[] {
@@ -749,9 +752,8 @@ export class NodeCreateDragManager {
                 throw new Error('The scene is not opened.');
             }
 
-            // 解析正式父级前，先把临时根移出预览 Canvas 并销毁它，
-            // 否则 getUICanvasNode 可能选中本会话的预览 Canvas（它也是场景下的 Canvas 节点）
-            this._releasePreviewCanvas(session);
+            // 先解除预览挂载，再解析正式父级，避免选中本会话的预览 Canvas
+            this._detachPreview(session);
 
             beforeUuids = this._host.collectSceneNodeUuidsForUndo();
             records = this._host.beginPrefabCanvasUndoCapture(beforeUuids);
@@ -940,13 +942,15 @@ export class NodeCreateDragManager {
         }
         session.entries = [];
         this._destroyTempCanvas(session);
+
+        // 移除预览后也要刷新画布，避免离开场景或取消拖拽后仍显示旧画面
+        void Service.Engine.repaintInEditMode();
     }
 
     private _destroyTempCanvas(session: DragSession): void {
         if (session.tempCanvasOwned && session.tempCanvas?.isValid) {
             try {
-                // destroy 不会立即移除节点，先将预览 Canvas 移出场景树
-                // 避免新节点挂回这个 Canvas 后，随它一起被销毁
+                // destroy 延迟到帧末执行，先移出场景树，避免正式父级查找再次选中预览 Canvas
                 session.tempCanvas.setParent(null);
                 session.tempCanvas.destroy();
             } catch (error) {
@@ -958,20 +962,15 @@ export class NodeCreateDragManager {
     }
 
     /**
-     * 提交前把挂在预览 Canvas 下的临时根移到引擎场景根，再销毁预览 Canvas
-     * 临时根的最终世界位置在提交循环里按 dropPointer 重新计算，这里的临时父级只用于保活
+     * 提交前解除临时节点的挂载，并清理预览 Canvas
+     *
+     * 隐藏节点在场景内换父级不会更新编辑器路径，先移出场景，让正式挂载重新注册整棵子树
+     * 最终位置在提交时按 dropPointer 重新计算
      */
-    private _releasePreviewCanvas(session: DragSession): void {
-        if (!session.tempCanvas) {
-            return;
-        }
-
-        const scene = director.getScene();
-        if (scene) {
-            for (const entry of session.entries) {
-                if (entry.root.isValid && entry.root.parent === session.tempCanvas) {
-                    entry.root.setParent(scene);
-                }
+    private _detachPreview(session: DragSession): void {
+        for (const entry of session.entries) {
+            if (entry.root.isValid) {
+                entry.root.setParent(null);
             }
         }
 
