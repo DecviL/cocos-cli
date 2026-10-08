@@ -945,6 +945,9 @@ export class NodeCreateDragManager {
     private _destroyTempCanvas(session: DragSession): void {
         if (session.tempCanvasOwned && session.tempCanvas?.isValid) {
             try {
+                // destroy 不会立即移除节点，先将预览 Canvas 移出场景树
+                // 避免新节点挂回这个 Canvas 后，随它一起被销毁
+                session.tempCanvas.setParent(null);
                 session.tempCanvas.destroy();
             } catch (error) {
                 console.error('[NodeCreateDrag] failed to destroy the temp canvas', error);
