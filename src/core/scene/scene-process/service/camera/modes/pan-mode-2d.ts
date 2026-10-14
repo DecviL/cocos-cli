@@ -28,11 +28,7 @@ class PanMode2D extends ModeBase2D {
     }
 
     onMouseMove(event: ISceneMouseEvent): boolean {
-        const dx = event.moveDeltaX;
-        const dy = event.moveDeltaY;
-        this._cameraCtrl.grid.pan(dx, dy);
-        this._cameraCtrl.updateGrid();
-        this._cameraCtrl.adjustCamera();
+        this._cameraCtrl.pan(event.moveDeltaX, event.moveDeltaY);
         return false;
     }
 }

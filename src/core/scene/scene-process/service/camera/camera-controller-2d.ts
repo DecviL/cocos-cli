@@ -575,6 +575,38 @@ export class CameraController2D extends CameraControllerBase {
         this._adjustToCenter(_defaultMarginPercentage, contentBounds, immediate, scale);
     }
 
+    /**
+     * 将实际屏幕投影换算到 Grid 的画布像素模型
+     *
+     * 宿主可只缩小相机视口而保留整屏画布，输入位置和位移都需要同一套逆变换
+     */
+    private _screenToGridTransform() {
+        if (typeof this._camera.camera?.worldToScreen !== 'function') {
+            return { scaleX: 1, scaleY: 1, offsetX: 0, offsetY: 0 };
+        }
+
+        const view = this._rulerView();
+        const originX = view.toX(0);
+        const originY = view.toY(0);
+        const grid = this._grid;
+        const scaleX = grid.xDirection * grid.xAxisScale / (view.toX(1) - originX);
+        const scaleY = grid.yDirection * grid.yAxisScale / (view.toY(1) - originY);
+
+        return {
+            scaleX,
+            scaleY,
+            offsetX: grid.valueToPixelH!(0) - originX * scaleX,
+            offsetY: grid.valueToPixelV!(0) - originY * scaleY,
+        };
+    }
+
+    /** 按鼠标在渲染画布上的实际像素位移平移场景 */
+    pan(deltaX: number, deltaY: number) {
+        const transform = this._screenToGridTransform();
+        this._grid.pan(deltaX * transform.scaleX, deltaY * transform.scaleY);
+        this.adjustCamera();
+    }
+
     // ---------- 缩放 ----------
 
     smoothScale(delta: number, curScale: number): number {
@@ -591,8 +623,9 @@ export class CameraController2D extends CameraControllerBase {
             newScale = clamp(newScale, this._grid.hTicks.minValueScale, this._grid.hTicks.maxValueScale);
         }
 
-        const px = offsetX !== undefined ? offsetX : width / 2;
-        const py = offsetY !== undefined ? offsetY : height / 2;
+        const transform = this._screenToGridTransform();
+        const px = offsetX !== undefined ? offsetX * transform.scaleX + transform.offsetX : width / 2;
+        const py = offsetY !== undefined ? offsetY * transform.scaleY + transform.offsetY : height / 2;
 
         this._grid.xAxisScaleAt(px, newScale);
         this._grid.yAxisScaleAt(py, newScale);

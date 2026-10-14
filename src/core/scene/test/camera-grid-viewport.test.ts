@@ -1,6 +1,7 @@
 import { Camera, Color, Vec3 } from 'cc';
 import { CameraController2D } from '../scene-process/service/camera/camera-controller-2d';
 import { Ruler2D } from '../scene-process/service/camera/ruler-2d';
+import type { ISceneMouseEvent } from '../scene-process/service/operation/types';
 
 jest.mock('cc', () => {
     class MockVec3 {
@@ -83,8 +84,11 @@ describe('CameraController2D grid viewport coverage', () => {
     });
 
     /** 创建带正交投影的相机，复现宿主独立修改 viewport 的行为 */
-    function createController(active = true) {
-        const viewport = { width: 1280, height: 720 };
+    function createController(active = true, dpr = 1) {
+        const canvas = cc.game.canvas!;
+        canvas.width = 1280 * dpr;
+        canvas.height = 720 * dpr;
+        const viewport = { x: 0, y: 0, width: canvas.width, height: canvas.height };
         const node = {
             parent: {},
             worldPosition: new Vec3(),
@@ -96,13 +100,14 @@ describe('CameraController2D grid viewport coverage', () => {
             node,
             orthoHeight: 360,
             camera: {
-                width: 2560,
-                height: 1440,
+                width: 2560 * dpr,
+                height: 1440 * dpr,
                 update: jest.fn(),
                 worldToScreen(out: Vec3, point: Vec3) {
                     const scale = viewport.height / (2 * camera.orthoHeight);
-                    out.x = viewport.width / 2 + (point.x - node.worldPosition.x) * scale;
-                    out.y = this.height - viewport.height / 2
+                    out.x = viewport.x + viewport.width / 2
+                        + (point.x - node.worldPosition.x) * scale;
+                    out.y = this.height - viewport.y - viewport.height / 2
                         + (point.y - node.worldPosition.y) * scale;
                     out.z = 0;
                     return out;
@@ -126,6 +131,90 @@ describe('CameraController2D grid viewport coverage', () => {
 
         return { controller, camera, viewport, ruler };
     }
+
+    /** 创建渲染像素坐标中的鼠标事件 */
+    function mouseEvent(overrides: Partial<ISceneMouseEvent> = {}): ISceneMouseEvent {
+        return {
+            x: 0, y: 0, clientX: 0, clientY: 0,
+            deltaX: 0, deltaY: 0, wheelDeltaX: 0, wheelDeltaY: 0,
+            moveDeltaX: 0, moveDeltaY: 0, movementX: 0, movementY: 0,
+            leftButton: false, middleButton: false, rightButton: false,
+            button: 0, buttons: 0,
+            ctrlKey: false, shiftKey: false, altKey: false, metaKey: false,
+            ...overrides,
+        };
+    }
+
+    /** 将世界点投影到与输入一致的左上角坐标 */
+    function project(fixture: ReturnType<typeof createController>, point: Vec3) {
+        const renderCamera = fixture.camera.camera;
+        const screen = renderCamera.worldToScreen(new Vec3(), point);
+        return { x: screen.x, y: renderCamera.height - screen.y };
+    }
+
+    describe.each([
+        { x: 0, y: 0, width: 1280, height: 720, dpr: 1 },
+        { x: 0, y: 0, width: 1280, height: 720, dpr: 2 },
+        { x: 0, y: 0, width: 640, height: 360, dpr: 1 },
+        { x: 0, y: 0, width: 640, height: 360, dpr: 2 },
+        { x: 80, y: 55, width: 900, height: 480, dpr: 1 },
+        { x: 80, y: 55, width: 900, height: 480, dpr: 2 },
+    ])('mouse tracking in a $width x $height viewport at DPR $dpr', (size) => {
+        function createInputFixture() {
+            const fixture = createController(true, size.dpr);
+            Object.assign(fixture.viewport, {
+                x: size.x * size.dpr,
+                y: size.y * size.dpr,
+                width: size.width * size.dpr,
+                height: size.height * size.dpr,
+            });
+            fixture.controller.zoomTo(1);
+            return fixture;
+        }
+
+        it('moves the scene by the right mouse drag distance', async () => {
+            const fixture = createInputFixture();
+            const point = new Vec3(800, 450);
+            const before = project(fixture, point);
+
+            fixture.controller.onMouseDown(mouseEvent({ rightButton: true, button: 2, buttons: 2 }));
+            await new Promise<void>(resolve => setImmediate(resolve));
+            fixture.controller.onMouseMove(mouseEvent({
+                moveDeltaX: 100 * size.dpr, moveDeltaY: 40 * size.dpr,
+            }));
+
+            const after = project(fixture, point);
+            expect((after.x - before.x) / size.dpr).toBeCloseTo(100, 6);
+            expect((after.y - before.y) / size.dpr).toBeCloseTo(40, 6);
+
+            // 宿主可在拖动期间调整视口，而不触发控制器的画布 resize
+            fixture.viewport.width *= 0.75;
+            fixture.viewport.height *= 0.75;
+            const resized = project(fixture, point);
+            fixture.controller.onMouseMove(mouseEvent({
+                moveDeltaX: -60 * size.dpr, moveDeltaY: 20 * size.dpr,
+            }));
+            const moved = project(fixture, point);
+            expect((moved.x - resized.x) / size.dpr).toBeCloseTo(-60, 6);
+            expect((moved.y - resized.y) / size.dpr).toBeCloseTo(20, 6);
+        });
+
+        it('keeps the world point under the mouse fixed while zooming', () => {
+            const fixture = createInputFixture();
+            const point = new Vec3(800, 450);
+            const before = project(fixture, point);
+
+            for (const wheelDeltaY of [120, -240, 120]) {
+                fixture.controller.onMouseWheel(mouseEvent({
+                    ...before, wheelDeltaY: wheelDeltaY * size.dpr,
+                }));
+
+                const after = project(fixture, point);
+                expect(after.x / size.dpr).toBeCloseTo(before.x / size.dpr, 6);
+                expect(after.y / size.dpr).toBeCloseTo(before.y / size.dpr, 6);
+            }
+        });
+    });
 
     /** 模拟真实引擎在 3D 正交侧视下接近零的水平投影比例 */
     function useSideView(fixture: ReturnType<typeof createController>) {
