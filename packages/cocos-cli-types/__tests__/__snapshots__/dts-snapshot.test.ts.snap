@@ -876,9 +876,9 @@ export declare type ISupportCreateCCType =
 | 'cc.PhysicsMaterial'
 | 'cc.LabelAtlas'
 | 'cc.RenderTexture'
-| 'cc.AnimationGraph'
+| 'cc.animation.AnimationGraph'
 | 'cc.AnimationMask'
-| 'cc.AnimationGraphVariant';
+| 'cc.animation.AnimationGraphVariant';
 export declare type ISupportCreateType = typeof SUPPORT_CREATE_TYPES[number];
 export declare interface IUerDataConfigItem {
     key?: string;
@@ -3980,9 +3980,9 @@ export declare type ISupportCreateCCType =
 | 'cc.PhysicsMaterial'
 | 'cc.LabelAtlas'
 | 'cc.RenderTexture'
-| 'cc.AnimationGraph'
+| 'cc.animation.AnimationGraph'
 | 'cc.AnimationMask'
-| 'cc.AnimationGraphVariant';
+| 'cc.animation.AnimationGraphVariant';
 export declare type ISupportCreateType = typeof SUPPORT_CREATE_TYPES[number];
 export declare interface ISupportFormat {
     rgb: ITextureCompressType[];
@@ -7657,9 +7657,9 @@ export declare type ISupportCreateCCType =
 | 'cc.PhysicsMaterial'
 | 'cc.LabelAtlas'
 | 'cc.RenderTexture'
-| 'cc.AnimationGraph'
+| 'cc.animation.AnimationGraph'
 | 'cc.AnimationMask'
-| 'cc.AnimationGraphVariant';
+| 'cc.animation.AnimationGraphVariant';
 export declare type ISupportCreateType = typeof SUPPORT_CREATE_TYPES[number];
 export declare interface ITargetOverrideInfo {
     source: string;
@@ -10217,9 +10217,9 @@ export declare type ISupportCreateCCType =
 | 'cc.PhysicsMaterial'
 | 'cc.LabelAtlas'
 | 'cc.RenderTexture'
-| 'cc.AnimationGraph'
+| 'cc.animation.AnimationGraph'
 | 'cc.AnimationMask'
-| 'cc.AnimationGraphVariant';
+| 'cc.animation.AnimationGraphVariant';
 export declare type ISupportCreateType = typeof SUPPORT_CREATE_TYPES[number];
 export declare interface IUerDataConfigItem {
     key?: string;
