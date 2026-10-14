@@ -2,13 +2,17 @@
 
 2026-09-18。独立 CLI 使用 Worker；PinK 使用 Webview 内唯一编辑场景。MCP 由已有 Provider/Broker 路由到该场景。本文描述当前代码，不代表 PinK 已完成接线。
 
+2026-10-14 更新：同步 main `0dc962a33822bf0dacfdb3cbdf0f2d3d4b1002f2`，配对 CLI/private runtime 版本为 `0.0.1-alpha.44`。抽离范围沿用 plan.md，保留全部 104 项 MCP 声明；已有 PinK 宿主接线及历史抽离缺口不属于本轮范围。
+
 ## 公开接口
 
 - `cocos-cli/host/core/scene/runtime/core`：导入并注册公开内核，不注册 Operation、Camera、Gizmo、Preview 等私有服务。
-- `cocos-cli/host/core/scene/runtime/context`：共享 Service registry、BaseService、事件总线、视图更新注册与地形会话适配。私有服务必须使用这一份内核，不能另打入一份 registry。
+- `cocos-cli/host/core/scene/runtime/context`：共享 Service registry、BaseService、事件总线、视图更新注册、地形会话适配及 registerNodeCreateDragFactory。私有服务必须使用这一份内核，不能另打入一份 registry。拖拽预览和落点计算由私有工厂提供，NodeService 保留节点创建、Canvas/Prefab 事务及撤销能力；无视图的 CLI 拖拽接口明确返回 NOT_EDITABLE，不加载私有实现。
 - `cocos-cli/host/core/scene/runtime/resources/index`：公开引擎/脚本/场景数据路由和 settings 缓存失效接口。没有编辑页面和私有 bundle，也不启动项目、Worker 或服务器。
 
-CLI 的 `host/*` 通配出口已替换为明确的出口清单。当前仍有 88 个配对版本 host 出口，包含构建、模拟器及旧内部适配；这不是已完成精简的通用 SDK。新增场景装配优先使用 runtime 入口；后续继续将细粒度旧引用收敛。历史 `dist/*` 仍为兼容保留，不应视作稳定 API。
+CLI 的 `host/*` 通配出口已替换为明确的出口清单，包含构建、模拟器及配对版本内部适配。本轮增加节点事务工具、探针快照等私有 runtime 消费的明确出口；这不是已完成精简的通用 SDK。新增场景装配优先使用 runtime 入口；后续继续将细粒度旧引用收敛。历史 `dist/*` 仍为兼容保留，不应视作稳定 API。
+
+私有 runtime 描述协议升级为 2：Play 入口使用 play-runtime.js，在独立 Webview 中装配完整场景服务及私有 PreviewPlay，不再提供协议 1 的 playInspect agent。宿主需在加载引擎前提供预览 settings，接本地 Service/events，并沿用既有实例路由；具体调用见私有包 docs/zh/runtime-consumers.md。CLI 保留 PreviewPlay 类型契约，不注册或打包其实现。
 
 ## 资源宿主
 

@@ -56,6 +56,25 @@ describe('Serialized node data with the real engine', () => {
         }
     });
 
+    it('flushes pending light probe transforms before serializing a scene', async () => {
+        const transforms = await import('../scene-process/service/scene/light-probe-transform');
+        const { sceneUtils } = await import('../scene-process/service/scene/utils');
+        const scene = new engine.Scene('SaveDuringProbeDrag');
+        const flush = jest.spyOn(transforms, 'flushLightProbeTransformEdit');
+        const serialize = jest.spyOn(EditorExtends, 'serialize');
+        try {
+            sceneUtils.serialize(scene);
+            expect(flush).toHaveBeenCalledTimes(1);
+            expect(flush).toHaveBeenCalledWith(scene);
+            expect(serialize).toHaveBeenCalledTimes(1);
+            expect(flush.mock.invocationCallOrder[0]).toBeLessThan(serialize.mock.invocationCallOrder[0]);
+        } finally {
+            flush.mockRestore();
+            serialize.mockRestore();
+            scene.destroy();
+        }
+    });
+
     it('preserves cyclic references between roots and components with fresh identities on every creation', async () => {
         const first = new engine.Node('First');
         const second = new engine.Node('Second');
@@ -175,6 +194,73 @@ describe('Serialized node data with the real engine', () => {
         expect(plainChild['_prefab']).toBeNull();
         expect(root['_prefab']).toBe(info);
         engine.assetManager.assets.remove(asset._uuid);
+    });
+
+    it('refreshes prefab assets by fileId while retaining overrides, mounts and references', async () => {
+        const { refreshPrefabInstances } = await import('../scene-process/service/undo/commands/refresh-prefab-instances');
+        const asset = new engine.Prefab();
+        const source = new engine.Node('Source');
+        asset.data = source;
+        const first = new engine.Node('First');
+        const second = new engine.Node('Second');
+        const removed = new engine.Node('Removed');
+        for (const child of [first, second, removed]) child.parent = source;
+        source.addComponent(References);
+        second.addComponent(References);
+        EditorExtends.PrefabUtils.addPrefabInfo(source, source, asset);
+
+        const wrapper = new engine.Node('Wrapper');
+        const records = ['one', 'two'].map(id => {
+            const root = engine.instantiate(asset) as Node;
+            root.parent = wrapper;
+            const info = root['_prefab']!;
+            info.instance = new engine.Prefab._utils.PrefabInstance();
+            info.instance.fileId = id;
+            const [a, b, c] = root.children;
+            const mounted = new engine.Node('Mounted');
+            mounted.parent = root;
+            const refs = mounted.addComponent(References);
+            refs.target = b;
+            refs.component = b.components[0];
+            refs.nodes = [a, b, c];
+            const mount = new engine.Prefab._utils.MountedChildrenInfo();
+            mount.targetInfo = new engine.Prefab._utils.TargetInfo();
+            mount.targetInfo.localID = [info.fileId];
+            mount.nodes = [mounted];
+            info.instance.mountedChildren.push(mount);
+            const override = new engine.Prefab._utils.PropertyOverrideInfo();
+            override.targetInfo = new engine.Prefab._utils.TargetInfo();
+            override.targetInfo.localID = [root.components[0].__prefab!.fileId];
+            override.propertyPath = ['target'];
+            override.value = b;
+            info.instance.propertyOverrides.push(override);
+            return { root, mounted, refs, a: a.uuid, b: b.uuid, comp: b.components[0].uuid };
+        });
+
+        removed.parent = null;
+        second.setSiblingIndex(0);
+        const added = new engine.Node('Added');
+        added.parent = source;
+        added.setSiblingIndex(0);
+        EditorExtends.PrefabUtils.addPrefabInfo(added, source, asset);
+        asset.compileCreateFunction();
+
+        for (let cycle = 0; cycle < 2; cycle++) {
+            refreshPrefabInstances(wrapper);
+            for (const record of records) {
+                const [d, b, a, mounted] = record.root.children;
+                expect(record.root.children.map(node => node.name)).toEqual(['Added', 'Second', 'First', 'Mounted']);
+                expect([a.uuid, b.uuid, b.components[0].uuid]).toEqual([record.a, record.b, record.comp]);
+                expect([d.uuid, d.components[0]?.uuid]).not.toContain(record.a);
+                expect(mounted).toBe(record.mounted);
+                expect(mounted['_prefab']).toBeNull();
+                expect(record.refs.target).toBe(b);
+                expect(record.refs.component).toBe(b.components[0]);
+                expect(record.refs.nodes).toEqual([a, b, null]);
+                expect(record.root.getComponent(References)!.target).toBe(b);
+                expect(record.root['_prefab']!.instance!.propertyOverrides[0].value).toBe(b);
+            }
+        }
     });
 
     it('preserves node and component identities when restoring the batch for Redo', async () => {

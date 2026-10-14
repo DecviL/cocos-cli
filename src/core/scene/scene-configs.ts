@@ -55,6 +55,7 @@ export interface IGizmoConfig {
 
 export interface ISceneViewConfig {
     sceneLightOn: boolean;
+    initialModes?: Record<string, '2d' | '3d'>;
 }
 
 export interface ISceneConfig {
@@ -196,6 +197,13 @@ class SceneConfig {
             if (typeof disk?.width === 'number' && typeof disk?.height === 'number') resolution = { ...resolution, ...disk };
         }
         return resolution;
+    }
+
+    async recordInitialView(uuid: string, mode: '2d' | '3d'): Promise<void> {
+        if (!this.configInstance) await this.init();
+        const local = this.configInstance.getAll('local') || {};
+        if (local.sceneView?.initialModes?.[uuid] !== undefined) return;
+        await this.configInstance.set(`sceneView.initialModes.${uuid}`, mode, 'local');
     }
 
     public set(path: string, value: any, scope?: ConfigurationScope) {

@@ -16,6 +16,12 @@ const privatePaths = [
     'core/scene/scene-process/service/camera',
     'core/scene/scene-process/service/gizmo',
     'core/scene/scene-process/service/preview',
+    'core/scene/scene-process/service/preview-play.js',
+    'core/scene/scene-process/service/preview-play.d.ts',
+    'core/scene/scene-process/service/node/node-create-drag.js',
+    'core/scene/scene-process/service/node/drag-placement.js',
+    'core/scene/scene-process/service/utils/cached-line-geometry.js',
+    'core/scene/scene-process/service/utils/light-probe-wireframe.js',
 ];
 for (const file of privatePaths) if (fs.existsSync(path.join(root, 'dist', file))) problems.push('Private artifact in CLI dist: ' + file);
 for (const file of ['scene-bundle.js', 'scene-bundle.js.map', 'input-bridge.js', 'preview-inspect.js']) {

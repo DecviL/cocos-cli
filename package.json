@@ -1,6 +1,6 @@
 {
     "name": "cocos-cli",
-    "version": "0.0.1-alpha.42",
+    "version": "0.0.1-alpha.44",
     "displayName": "COCOS CLI",
     "icon": "static/logo/logo.png",
     "description": "COCOS CLI",
@@ -8,7 +8,7 @@
     "engines": {
         "vscode": ">=1.107.1",
         "electron": "42.3.0",
-        "pink": ">=0.0.1.37"
+        "pink": ">=0.0.1.39"
     },
     "bin": {
         "cocos": "./dist/cli.js"
@@ -555,6 +555,30 @@
         "./host/server/socket": {
             "types": "./dist/server/socket.d.ts",
             "default": "./dist/server/socket.js"
+        },
+        "./host/core/scene/common/node": {
+            "types": "./dist/core/scene/common/node.d.ts",
+            "default": "./dist/core/scene/common/node.js"
+        },
+        "./host/core/scene/scene-process/service/scene/light-probe-snapshot": {
+            "types": "./dist/core/scene/scene-process/service/scene/light-probe-snapshot.d.ts",
+            "default": "./dist/core/scene/scene-process/service/scene/light-probe-snapshot.js"
+        },
+        "./host/core/scene/scene-process/service/scene/light-probe-transform": {
+            "types": "./dist/core/scene/scene-process/service/scene/light-probe-transform.d.ts",
+            "default": "./dist/core/scene/scene-process/service/scene/light-probe-transform.js"
+        },
+        "./host/core/scene/scene-process/service/node/node-utils": {
+            "types": "./dist/core/scene/scene-process/service/node/node-utils.d.ts",
+            "default": "./dist/core/scene/scene-process/service/node/node-utils.js"
+        },
+        "./host/core/engine/editor-extends/manager/path-utils": {
+            "types": "./dist/core/engine/editor-extends/manager/path-utils.d.ts",
+            "default": "./dist/core/engine/editor-extends/manager/path-utils.js"
+        },
+        "./host/core/scene/scene-process/service/node/prefab-canvas-mutation": {
+            "types": "./dist/core/scene/scene-process/service/node/prefab-canvas-mutation.d.ts",
+            "default": "./dist/core/scene/scene-process/service/node/prefab-canvas-mutation.js"
         }
     }
 }

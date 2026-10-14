@@ -114,6 +114,7 @@ jest.mock('../../scene-process/rpc', () => ({
     Rpc: { getInstance: () => ({ request: mockRpcRequest }) },
 }));
 
+
 jest.mock('../../scene-process/service/node/node-create', () => ({
     createNodeByAsset: mockCreateNodeByAsset,
     createShouldHideInHierarchyCanvasNode: mockCreateShouldHideInHierarchyCanvasNode,

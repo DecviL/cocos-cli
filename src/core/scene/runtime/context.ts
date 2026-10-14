@@ -5,3 +5,5 @@ export { ServiceEvents } from '../scene-process/service/core/global-events';
 export { registerViewUpdate } from '../scene-process/service/core/view-updates';
 export { registerTerrainSessionResolver } from '../scene-process/service/core/terrain-session';
 export type { TerrainSession } from '../scene-process/service/core/terrain-session';
+export { registerNodeCreateDragFactory } from '../scene-process/service/core/node-create-drag';
+export type { ICreateDragHost, INodeCreateDragController } from '../scene-process/service/core/node-create-drag';

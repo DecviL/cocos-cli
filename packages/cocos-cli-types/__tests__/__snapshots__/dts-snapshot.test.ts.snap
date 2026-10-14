@@ -528,6 +528,7 @@ export declare interface ExecuteAssetDBScriptMethodOptions {
     method: string;
     args?: any[];
 }
+export declare function exportAssetPackage(urls: string[], destination: string, includeDependencies?: boolean): Promise<number>;
 export declare interface FileNameCheckConfig {
     regStr: string;
     failedType: 'error' | 'warn' | 'info',
@@ -886,9 +887,9 @@ export declare type ISupportCreateCCType =
 | 'cc.PhysicsMaterial'
 | 'cc.LabelAtlas'
 | 'cc.RenderTexture'
-| 'cc.AnimationGraph'
+| 'cc.animation.AnimationGraph'
 | 'cc.AnimationMask'
-| 'cc.AnimationGraphVariant';
+| 'cc.animation.AnimationGraphVariant';
 export declare type ISupportCreateType = typeof SUPPORT_CREATE_TYPES[number];
 export declare interface IUerDataConfigItem {
     key?: string;
@@ -2566,6 +2567,7 @@ export declare interface IBuildCommonOptions {
     preview?: boolean;
     stage?: string;
     buildMode?: 'normal' | 'bundle' | 'script';
+    isApiBuild?: boolean;
     nextStages?: string[];
     subTaskPlatforms?: string[];
     subTaskBuildOutputs?: Record<string, ISubTaskBuildOutput>;
@@ -3989,9 +3991,9 @@ export declare type ISupportCreateCCType =
 | 'cc.PhysicsMaterial'
 | 'cc.LabelAtlas'
 | 'cc.RenderTexture'
-| 'cc.AnimationGraph'
+| 'cc.animation.AnimationGraph'
 | 'cc.AnimationMask'
-| 'cc.AnimationGraphVariant';
+| 'cc.animation.AnimationGraphVariant';
 export declare type ISupportCreateType = typeof SUPPORT_CREATE_TYPES[number];
 export declare interface ISupportFormat {
     rgb: ITextureCompressType[];
@@ -5825,12 +5827,76 @@ export declare interface AutoAtlasAssetUserData {
     platformSettings: any;
     textureSetting: any;
 }
+export declare type BeginCreateDragResult = CreateDragResult<CreateDragSession>;
 export declare interface BitmapFontAssetUserData {
     _fntConfig: any;
     fontSize: number;
     textureUuid: string;
 }
+export declare type CancelCreateDragResult = CreateDragResult<Extract<CreateDragSession, {
+    state: 'committed' | 'cancelled';
+}>>;
+export declare type CommitCreateDragResult = CreateDragResult<Extract<CreateDragSession, {
+    state: 'committed' | 'needs-confirmation' | 'cancelled';
+}>>;
 export declare const CREATE_TYPES: readonly ["scene", "prefab"];
+export declare type CreateDragCancelReason =
+'leave'
+| 'escape'
+| 'source-ended'
+| 'replaced'
+| 'runtime-invalidated'
+| 'scene-operation'
+| 'disposed'
+| 'user-cancelled'
+| 'error';
+export declare type CreateDragError = {
+    code: Exclude<CreateDragErrorCode, 'COMMIT_RECOVERY_FAILED'>;
+    message: string;
+} | {
+    code: 'COMMIT_RECOVERY_FAILED';
+    message: string;
+    affectedNodePaths: string[];
+};
+export declare type CreateDragErrorCode =
+'UNSUPPORTED'
+| 'INVALID_REQUEST'
+| 'SESSION_CONFLICT'
+| 'SESSION_CLOSED'
+| 'STALE_SCENE'
+| 'NOT_EDITABLE'
+| 'NO_CREATABLE_ITEMS'
+| 'ASSET_LOAD_FAILED'
+| 'VIEWPORT_CHANGED'
+| 'INVALID_CONFIRMATION'
+| 'NO_PLACEMENT'
+| 'COMMIT_FAILED'
+| 'COMMIT_RECOVERY_FAILED';
+export declare type CreateDragResult<T> = {
+    ok: true;
+    value: T;
+} | {
+    ok: false;
+    error: CreateDragError;
+};
+export declare type CreateDragSession = {
+    sessionId: string;
+    state: 'preparing' | 'previewing' | 'committing';
+}
+| {
+    sessionId: string;
+    state: 'needs-confirmation';
+    confirmation: ICreateDragConfirmation;
+}
+| {
+    sessionId: string;
+    state: 'committed';
+    nodePaths: string[];
+}
+| {
+    sessionId: string;
+    state: 'cancelled';
+};
 export declare interface DirectoryAssetUserData {
     isBundle?: boolean;
     bundleConfigID?: string;
@@ -6477,6 +6543,11 @@ export declare interface IBaseIdentifier {
     assetUrl: string;
     assetType: string;
 }
+export declare interface IBeginCreateDragParams {
+    sessionId: string;
+    items: ICreateDragItem[];
+    pointer: ICreateDragPointer;
+}
 export declare interface ICameraConfig {
     color: number[];
     fov: number;
@@ -6515,8 +6586,13 @@ export declare interface ICameraService {
     setGridColor(color: number[], persist?: boolean): void;
     setOriginAxes2D(config: IOriginAxesConfig): void;
     setOriginAxes3D(config: IOriginAxesConfig): void;
+    setRulerVisible(visible: boolean): void;
     getCamera(): Camera | undefined;
     onUpdate(deltaTime: number): void;
+}
+export declare interface ICancelCreateDragParams {
+    sessionId: string;
+    reason: CreateDragCancelReason;
 }
 export declare interface IChangeNodeLockParams {
     paths: string[];
@@ -6544,6 +6620,14 @@ export declare interface ICloseOptions {
     save?: boolean;
     allowDeletedSourceFallback?: boolean;
     expectedCurrentUuid?: string;
+}
+export declare interface ICommitCreateDragParams {
+    sessionId: string;
+    pointer: ICreateDragPointer;
+    confirmation?: {
+        id: string;
+        choiceId: PrefabCanvasHandling;
+    };
 }
 export declare interface IComponent extends IProperty {
     value: {
@@ -6597,6 +6681,28 @@ export declare interface ICreateBySerializedDataParams {
     keepWorldTransform?: boolean;
     externalReferences?: 'resolve' | 'clear';
 }
+export declare interface ICreateDragConfirmation {
+    id: string;
+    kind: 'prefab-canvas';
+    choices: PrefabCanvasHandling[];
+}
+export declare interface ICreateDragItem {
+    dbURL: string;
+    name?: string;
+}
+export declare interface ICreateDragPointer {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    viewport: {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+    };
+    sequence: number;
+}
 export declare interface ICreateNodePreflightResult {
     action: 'create' | 'choose-prefab-canvas-handling';
     canvasRequired: boolean;
@@ -6644,6 +6750,10 @@ export declare interface IEditorService extends IServiceEvents {
     queryCurrent(): Promise<TEditorEntity | null>;
     querySceneSerializedData(): Promise<string>;
     getRootNode(): TEditorInstance | null;
+    adoptRuntimeScene(scene: Scene, identity?: {
+        url?: string;
+    }): void;
+    releaseRuntimeScene(): void;
     lock(): Promise<void>;
     unlock(): void;
 }
@@ -6652,6 +6762,7 @@ export declare interface IEngineService extends IServiceEvents {
     repaintInEditMode(): Promise<void>;
     pause(): void;
     resume(): void;
+    stopTick(): void;
     initCustomLayer(layers?: ICustomLayerConfig[]): Promise<void>;
     enterAnimationMode(): void;
     exitAnimationMode(): void;
@@ -6974,6 +7085,7 @@ export declare interface INode {
 export declare interface INodeDumpOptions {
     includeChildren?: boolean;
     includeComponents?: boolean;
+    includeLightProbeData?: boolean;
 }
 export declare interface INodeService extends IServiceEvents {
     serialize(params: ISerializeNodesParams): Promise<SerializedNodeData>;
@@ -6981,6 +7093,10 @@ export declare interface INodeService extends IServiceEvents {
     createByType(params: ICreateByNodeTypeParams): Promise<INode | null>;
     createByAsset(params: ICreateByAssetParams): Promise<INode | null>;
     preflightCreate(params: ICreateByNodeTypeParams | ICreateByAssetParams): Promise<ICreateNodePreflightResult>;
+    beginCreateDrag(params: IBeginCreateDragParams): Promise<BeginCreateDragResult>;
+    updateCreateDrag(params: IUpdateCreateDragParams): Promise<UpdateCreateDragResult>;
+    commitCreateDrag(params: ICommitCreateDragParams): Promise<CommitCreateDragResult>;
+    cancelCreateDrag(params: ICancelCreateDragParams): Promise<CancelCreateDragResult>;
     delete(params: IDeleteNodeParams): Promise<IDeleteNodeResult | null>;
     query(params?: IQueryNodeParams): Promise<INode | IScene | null>;
     queryNodeTree(params: IQueryNodeTreeParams): Promise<INodeTreeItem | null>;
@@ -7098,6 +7214,20 @@ export declare interface IPreviewInstance {
     is2DView(): boolean;
     resetCameraView(): void;
     hide(): void;
+}
+export declare interface IPreviewPlayService extends IServiceEvents {
+    start(serializedSceneJson: string, options?: IPreviewPlayStartOptions): Promise<void>;
+    stop(): Promise<void>;
+    pause(isPause: boolean): Promise<void>;
+    step(): boolean;
+    isPause(): boolean;
+    getState(): PreviewPlayState;
+    setFps(fps: number): void;
+    showState(show: boolean): void;
+}
+export declare interface IPreviewPlayStartOptions {
+    paused?: boolean;
+    sceneUrl?: string;
 }
 export declare interface IPreviewService extends IMotionPreviewService {
     open(uuid: string): Promise<IPreviewInstance | null>;
@@ -7516,6 +7646,7 @@ export declare interface IServiceManager {
     Gizmo: IGizmoService;
     SceneView: ISceneViewService;
     Preview: IPreviewService;
+    PreviewPlay: IPreviewPlayService;
     UI: IUIService;
     ReflectionProbe: IReflectionProbeService;
     ReferenceImage: IReferenceImageService;
@@ -7548,9 +7679,9 @@ export declare type ISupportCreateCCType =
 | 'cc.PhysicsMaterial'
 | 'cc.LabelAtlas'
 | 'cc.RenderTexture'
-| 'cc.AnimationGraph'
+| 'cc.animation.AnimationGraph'
 | 'cc.AnimationMask'
-| 'cc.AnimationGraphVariant';
+| 'cc.animation.AnimationGraphVariant';
 export declare type ISupportCreateType = typeof SUPPORT_CREATE_TYPES[number];
 export declare interface ITargetOverrideInfo {
     source: string;
@@ -7768,6 +7899,10 @@ export declare interface IUnlinkPrefabParams {
 export declare interface IUnpackPrefabInstanceParams {
     nodePath: string;
     recursive?: boolean;
+}
+export declare interface IUpdateCreateDragParams {
+    sessionId: string;
+    pointer: ICreateDragPointer;
 }
 export declare interface IVec3 {
     x: number;
@@ -8020,6 +8155,7 @@ export declare enum PrefabState {
     PrefabInstance = 2,
     PrefabLostAsset = 3
 }
+export declare type PreviewPlayState = 'stop' | 'play' | 'pause';
 export declare type ReferenceImageVisibilityReason = 'visible' | 'disabled' | 'no-editor' | 'not-2d' | 'unbound' | 'missing' | 'load-error';
 export declare enum ReloadResult {
     SUCCESS = 0,
@@ -8160,6 +8296,10 @@ export declare interface TextureCubeAssetUserData extends TextureBaseAssetUserDa
 }
 export declare type TSceneTemplateType = typeof SCENE_TEMPLATE_TYPE[number];
 export declare type UIAlignType = 'top' | 'v-center' | 'bottom' | 'left' | 'h-center' | 'right';
+export declare type UpdateCreateDragResult = CreateDragResult<CreateDragSession | {
+    sessionId: string;
+    state: 'ignored';
+}>;
 export declare interface Vec2 {
     x: number;
     y: number;
@@ -8983,6 +9123,7 @@ export declare namespace Assets {
         createAsset,
         importAsset,
         copyAsset,
+        exportAssetPackage,
         reimportAsset,
         saveAsset,
         querySerializedData,
@@ -9183,6 +9324,30 @@ export declare interface BitmapFontAssetUserData {
 export declare const build: (enginePath?: string) => Promise<void>;
 export declare const buildNative: (enginePath?: string) => Promise<void>;
 export declare const buildRuntime: (enginePath?: string) => Promise<void>;
+export declare const BUILTIN_NODE_CREATE_TARGETS: Readonly<{
+    readonly empty: "db:
+    readonly label: "db:
+    readonly 'particle-system-2d': "db:
+    readonly 'rich-text': "db:
+    readonly sprite: "db:
+    readonly 'sprite-splash': "db:
+    readonly 'tiled-map': "db:
+    readonly button: "db:
+    readonly 'canvas-2d': "db:
+    readonly 'canvas-3d': "db:
+    readonly 'edit-box': "db:
+    readonly layout: "db:
+    readonly mask: "db:
+    readonly 'progress-bar': "db:
+    readonly 'scroll-view': "db:
+    readonly slider: "db:
+    readonly toggle: "db:
+    readonly 'toggle-group': "db:
+    readonly 'video-player': "db:
+    readonly 'web-view': "db:
+    readonly widget: "db:
+}>;
+export declare type BuiltinNodeCreateEntryId = keyof typeof BUILTIN_NODE_CREATE_TARGETS;
 export declare interface CategoryDetail extends CategoryInfo {
     modules: IModules;
 }
@@ -9341,6 +9506,7 @@ export declare interface ExecuteAssetDBScriptMethodOptions {
     method: string;
     args?: any[];
 }
+export declare function exportAssetPackage(urls: string[], destination: string, includeDependencies?: boolean): Promise<number>;
 export declare interface Features {
     [feature: string]: IModuleItem;
 }
@@ -10016,9 +10182,9 @@ export declare type ISupportCreateCCType =
 | 'cc.PhysicsMaterial'
 | 'cc.LabelAtlas'
 | 'cc.RenderTexture'
-| 'cc.AnimationGraph'
+| 'cc.animation.AnimationGraph'
 | 'cc.AnimationMask'
-| 'cc.AnimationGraphVariant';
+| 'cc.animation.AnimationGraphVariant';
 export declare type ISupportCreateType = typeof SUPPORT_CREATE_TYPES[number];
 export declare interface IUerDataConfigItem {
     key?: string;
@@ -10460,6 +10626,8 @@ export declare namespace Scene {
         startupWorker,
         setCommandProvider,
         resetCommandProvider,
+        BUILTIN_NODE_CREATE_TARGETS,
+        BuiltinNodeCreateEntryId,
         ISceneCommandProvider,
         SceneCommandProviderRegistration,
         SceneCommandRequestOptions,
@@ -10909,6 +11077,30 @@ export { }
 
 exports[`DTS API compatibility scene.d.ts should match snapshot 1`] = `
 "import type { ChildProcess } from 'child_process';
+export declare const BUILTIN_NODE_CREATE_TARGETS: Readonly<{
+    readonly empty: "db:
+    readonly label: "db:
+    readonly 'particle-system-2d': "db:
+    readonly 'rich-text': "db:
+    readonly sprite: "db:
+    readonly 'sprite-splash': "db:
+    readonly 'tiled-map': "db:
+    readonly button: "db:
+    readonly 'canvas-2d': "db:
+    readonly 'canvas-3d': "db:
+    readonly 'edit-box': "db:
+    readonly layout: "db:
+    readonly mask: "db:
+    readonly 'progress-bar': "db:
+    readonly 'scroll-view': "db:
+    readonly slider: "db:
+    readonly toggle: "db:
+    readonly 'toggle-group': "db:
+    readonly 'video-player': "db:
+    readonly 'web-view': "db:
+    readonly widget: "db:
+}>;
+export declare type BuiltinNodeCreateEntryId = keyof typeof BUILTIN_NODE_CREATE_TARGETS;
 export declare function init(): Promise<void>;
 export declare interface ISceneCommandProvider {
     request(module: string, method: string, args?: any[], options?: SceneCommandRequestOptions): Promise<any>;

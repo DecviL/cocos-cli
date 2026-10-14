@@ -12,6 +12,14 @@ import {
     ISerializeNodesParams,
     ICreateBySerializedDataParams,
     SerializedNodeData,
+    IBeginCreateDragParams,
+    IUpdateCreateDragParams,
+    ICommitCreateDragParams,
+    ICancelCreateDragParams,
+    BeginCreateDragResult,
+    UpdateCreateDragResult,
+    CommitCreateDragResult,
+    CancelCreateDragResult,
 } from '../../common';
 import { INodeInfo } from '../../common/cli/node';
 import { Rpc } from '../rpc';
@@ -102,11 +110,24 @@ export const NodeProxy: INodeProxy = {
             path: params?.path ?? '',
             includeChildren: params?.includeChildren ?? false,
             includeComponents: params?.includeComponents ?? false,
+            includeLightProbeData: params?.includeLightProbeData,
         }]);
         if (!result) return null;
         return DumpConverter.toNode(result, { path: params?.path });
     },
     queryNodeTree(params: IQueryNodeTreeParams): Promise<INodeTreeItem | null> {
         return Rpc.getInstance().request('Node', 'queryNodeTree', [params]);
+    },
+    beginCreateDrag(params: IBeginCreateDragParams): Promise<BeginCreateDragResult> {
+        return Rpc.getInstance().request('Node', 'beginCreateDrag', [params]);
+    },
+    updateCreateDrag(params: IUpdateCreateDragParams): Promise<UpdateCreateDragResult> {
+        return Rpc.getInstance().request('Node', 'updateCreateDrag', [params]);
+    },
+    commitCreateDrag(params: ICommitCreateDragParams): Promise<CommitCreateDragResult> {
+        return Rpc.getInstance().request('Node', 'commitCreateDrag', [params]);
+    },
+    cancelCreateDrag(params: ICancelCreateDragParams): Promise<CancelCreateDragResult> {
+        return Rpc.getInstance().request('Node', 'cancelCreateDrag', [params]);
     },
 };

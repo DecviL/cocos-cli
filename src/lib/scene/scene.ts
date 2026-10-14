@@ -6,6 +6,8 @@ import type {
     SceneCommandProviderRegistration,
 } from '../../core/scene/main-process/rpc';
 
+export { BUILTIN_NODE_CREATE_TARGETS, type BuiltinNodeCreateEntryId } from '../../core/scene/common/node-create-targets';
+
 export type {
     ISceneCommandProvider,
     SceneCommandProviderRegistration,

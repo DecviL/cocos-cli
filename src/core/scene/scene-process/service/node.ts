@@ -1,5 +1,6 @@
 import { register, BaseService, Service } from './core';
 import { queryRegisteredService } from './core/decorator';
+import { basename, extname } from 'path';
 import type { ComponentService } from './component';
 import {
     type ICreateByAssetParams,
@@ -8,6 +9,14 @@ import {
     type ICreateBySerializedDataParams,
     type SerializedNodeData,
     type ICreateNodePreflightResult,
+    type IBeginCreateDragParams,
+    type IUpdateCreateDragParams,
+    type ICommitCreateDragParams,
+    type ICancelCreateDragParams,
+    type BeginCreateDragResult,
+    type UpdateCreateDragResult,
+    type CommitCreateDragResult,
+    type CancelCreateDragResult,
     type IDeleteNodeParams,
     type IDeleteNodeResult,
     type INode,
@@ -37,6 +46,7 @@ import { Canvas, CCClass, CCObject, Component, director, Node, Prefab, Quat, UIT
 import { createNodeByAsset, createShouldHideInHierarchyCanvasNode, loadAny, queryCanvasRequiredByAsset } from './node/node-create';
 import { getUICanvasNode, getUITransformParentNode, hasOneKindOfComponent, setLayer } from './node/node-utils';
 import { NodeUndoHelper } from './node/node-undo';
+import { createNodeCreateDragController, unavailableCreateDrag, type INodeCreateDragController } from './core/node-create-drag';
 import { isUndoApplying } from './undo/applying-state';
 import { prefabUtils } from './prefab/utils';
 import { sceneUtils } from './scene/utils';
@@ -78,6 +88,7 @@ interface IResolvedAssetIdentity {
     kind: 'asset';
     assetUuid: string;
     assetType?: string;
+    assetName?: string;
 }
 
 interface IResolvedAssetCreateTarget extends IResolvedAssetIdentity {
@@ -112,6 +123,36 @@ export class NodeService extends BaseService<INodeEvents> implements INodeServic
     };
     private readonly _preflightTokens = new Map<string, ICreatePreflightToken>();
     private _preflightTokenSequence = 0;
+
+    private _createDrag: INodeCreateDragController | undefined;
+
+    private getCreateDrag(): INodeCreateDragController | undefined {
+        return this._createDrag ??= createNodeCreateDragController({
+    resolveCanvasTransaction: (workMode, canvasRequired, parent, position, prefabCanvasHandling) =>
+                this._resolveCanvasRequiredTransaction(workMode, canvasRequired, parent, position, prefabCanvasHandling),
+            collectSceneNodeUuidsForUndo: () => this._collectSceneNodeUuidsForUndo(),
+            beginPrefabCanvasUndoCapture: beforeUuids => this._beginPrefabCanvasUndoCapture(beforeUuids),
+            endPrefabCanvasUndoCapture: () => this._endPrefabCanvasUndoCapture(),
+            recordCreateNodeCommand: (beforeUuids, paths, records) =>
+                this._recordCreateNodeCommand(beforeUuids, paths, records),
+        });
+    }
+
+    async beginCreateDrag(params: IBeginCreateDragParams): Promise<BeginCreateDragResult> {
+        return this.getCreateDrag()?.begin(params) ?? unavailableCreateDrag();
+    }
+
+    async updateCreateDrag(params: IUpdateCreateDragParams): Promise<UpdateCreateDragResult> {
+        return this.getCreateDrag()?.update(params) ?? unavailableCreateDrag();
+    }
+
+    async commitCreateDrag(params: ICommitCreateDragParams): Promise<CommitCreateDragResult> {
+        return this.getCreateDrag()?.commit(params) ?? unavailableCreateDrag();
+    }
+
+    async cancelCreateDrag(params: ICancelCreateDragParams): Promise<CancelCreateDragResult> {
+        return this.getCreateDrag()?.cancel(params) ?? unavailableCreateDrag();
+    }
 
     async serialize(params: ISerializeNodesParams): Promise<SerializedNodeData> {
         if (!Array.isArray(params?.paths) || !params.paths.length) {
@@ -301,6 +342,7 @@ export class NodeService extends BaseService<INodeEvents> implements INodeServic
                     params,
                     target.assetType,
                     preflightRecord?.target.kind === 'asset' ? preflightRecord.target.canvasRequired : undefined,
+                    target.assetName,
                 );
             } finally {
                 this._endPrefabCanvasUndoCapture();
@@ -371,6 +413,7 @@ export class NodeService extends BaseService<INodeEvents> implements INodeServic
             kind: 'asset',
             assetUuid: assetInfo.uuid,
             assetType: assetInfo?.type,
+            assetName: assetInfo.name,
         };
     }
 
@@ -642,6 +685,7 @@ export class NodeService extends BaseService<INodeEvents> implements INodeServic
         params: ICreateByNodeTypeParams | ICreateByAssetParams,
         assetType?: string,
         expectedAssetCanvasRequired?: boolean,
+        assetName?: string,
     ): Promise<INode | null> {
         const currentScene = Service.Editor.getRootNode();
         if (!currentScene) {
@@ -722,6 +766,8 @@ export class NodeService extends BaseService<INodeEvents> implements INodeServic
 
             if (params.name) {
                 resultNode.name = params.name;
+            } else if ('dbURL' in params && !resultNode.name) {
+                resultNode.name = (assetName && basename(assetName, extname(assetName))) || 'Node';
             }
 
             this.emit('node:before-add', resultNode);
@@ -1234,10 +1280,18 @@ export class NodeService extends BaseService<INodeEvents> implements INodeServic
     }
 
     public onEditorClosed() {
+        // 场景关闭/重载前结束拖拽预览，避免临时节点残留到下一个场景
+        void this._createDrag?.cancelActive('disposed');
         // nodeMgr 清理 EditorExtends.Component 缓存前，先停止组件事件转发。
         Service.Component.unregisterCompMgrEvents();
         nodeMgr.onEditorClosed();
         this._cutUuids = [];
+    }
+
+    public onEditorDisposed() {
+        // 服务级销毁：退订生命周期事件并清空会话
+        this._createDrag?.dispose();
+        this._createDrag = undefined;
     }
 
     public async previewSetProperty(options: ISetPropertyOptions): Promise<boolean> {

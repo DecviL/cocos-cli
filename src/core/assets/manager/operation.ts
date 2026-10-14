@@ -480,7 +480,7 @@ class AssetOperation extends EventEmitter {
         const fileName = extName && baseName.endsWith(extName) ? baseName : baseName + extName;
         const target = join(dir, fileName);
 
-        return await this.createAsset({
+        const assetInfo = await this.createAsset({
             handler: createInfo.handler,
             target,
             overwrite: options?.overwrite ?? false,
@@ -488,6 +488,11 @@ class AssetOperation extends EventEmitter {
             template: createInfo.template,
             content: options?.content,
         });
+        if (type === 'scene' && ['2d', '3d', 'quality'].includes(createInfo.name || '') && options?.content === undefined) {
+            const { sceneConfigInstance } = await import('../../scene/scene-configs');
+            await sceneConfigInstance.recordInitialView(assetInfo.uuid, createInfo.name === '2d' ? '2d' : '3d');
+        }
+        return assetInfo;
     }
 
     private _resolveCreateAssetDir(dirOrUrl: string) {
@@ -982,7 +987,7 @@ class AssetOperation extends EventEmitter {
     }
 
     private _isAnimationGraphAsset(asset: IAsset): boolean {
-        return asset.meta?.importer === 'animation-graph' || (asset as any).type === 'cc.AnimationGraph';
+        return asset.meta?.importer === 'animation-graph' || (asset as any).type === 'cc.animation.AnimationGraph';
     }
 
     private async _runAnimationGraphExternalWrites<T>(assets: IAsset[], write: () => Promise<T>): Promise<T> {

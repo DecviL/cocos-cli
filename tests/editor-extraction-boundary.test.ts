@@ -45,6 +45,11 @@ it('publishes a CLI without private package dependencies or preview commands', (
     expect(manifest.exports['./host/*']).toBeUndefined();
     expect(fs.existsSync(path.join(root, 'src/core/scene/scene-process/service/operation.ts'))).toBe(false);
     expect(fs.existsSync(path.join(root, 'src/core/scene/scene-process/service/operation/operation-manager.ts'))).toBe(false);
+    for (const file of ['preview-play.ts', 'node/node-create-drag.ts', 'node/drag-placement.ts',
+        'gizmo/utils/cached-line-geometry.ts', 'gizmo/utils/light-probe-wireframe.ts',
+        'utils/cached-line-geometry.ts', 'utils/light-probe-wireframe.ts']) {
+        expect(fs.existsSync(path.join(root, 'src/core/scene/scene-process/service', file))).toBe(false);
+    }
     const cli = fs.readFileSync(path.join(root, 'src/cli.ts'), 'utf8');
     expect(cli).not.toMatch(/PreviewCommand|SimulatorCommand/);
     const simulator = fs.readFileSync(path.join(root, 'src/lib/simulator/simulator.ts'), 'utf8');

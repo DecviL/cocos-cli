@@ -1,6 +1,7 @@
 export * from './const';
 export * from './cli';
 export * from './node';
+export * from './node-create-targets';
 export * from './prefab';
 export * from './editor';
 export * from './script';
@@ -15,6 +16,7 @@ export * from './camera';
 export * from './gizmo';
 export * from './scene-view';
 export * from './preview';
+export * from './preview-play';
 export * from './ui';
 export * from './reflection-probe';
 export * from './terrain';
