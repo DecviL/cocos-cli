@@ -7,6 +7,8 @@ import type {
 } from '../../core/scene/main-process/rpc';
 
 export { BUILTIN_NODE_CREATE_TARGETS, type BuiltinNodeCreateEntryId } from '../../core/scene/common/node-create-targets';
+// Shared animation-graph data contracts; the preview implementation remains private.
+export type { MotionPreviewDesc, MotionPreviewDescNode } from '../../core/scene/common/preview';
 
 export type {
     ISceneCommandProvider,

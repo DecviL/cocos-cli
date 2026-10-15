@@ -92,7 +92,7 @@ export const sceneResourceRoutes = [
                     const effectBinPath = join(scripting.projectPath, 'temp', 'cli', 'asset-db', 'effect', 'effect.bin');
                     if (await pathExists(effectBinPath)) {
                         res.setHeader('Content-Type', 'application/octet-stream');
-                        res.sendFile(effectBinPath);
+                        res.sendFile(effectBinPath, { dotfiles: 'allow' });
                     } else {
                         res.status(404).send('effect.bin not found');
                     }

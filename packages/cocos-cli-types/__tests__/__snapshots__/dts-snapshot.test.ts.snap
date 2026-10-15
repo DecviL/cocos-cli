@@ -10356,6 +10356,46 @@ export declare interface ModuleRenderConfig {
     version: string;
     migrationScript?: string;
 }
+export declare interface MotionPreviewDesc {
+    motion: MotionPreviewDescNode | null;
+    variables: MotionPreviewVariable[];
+}
+export declare type MotionPreviewDescNode = {
+    kind: 'clip';
+    clipUuid: string | null;
+} | {
+    kind: 'blend-1d';
+    variable: string | null;
+    value: number;
+    children: {
+        motion: MotionPreviewDescNode | null;
+        threshold: number;
+    }[];
+} | {
+    kind: 'blend-2d';
+    variableX: string | null;
+    valueX: number;
+    variableY: string | null;
+    valueY: number;
+    algorithm?: number;
+    children: {
+        motion: MotionPreviewDescNode | null;
+        threshold: {
+            x: number;
+            y: number;
+        };
+    }[];
+} | {
+    kind: 'blend-direct';
+    children: {
+        motion: MotionPreviewDescNode | null;
+        weight: number;
+    }[];
+};
+export declare interface MotionPreviewVariable {
+    name: string;
+    value: number | null;
+}
 export declare function moveAsset(source: string, target: string, options?: AssetOperationOption): Promise<any>;
 export declare enum NormalImportSetting {
     optional = 0,
@@ -10628,6 +10668,8 @@ export declare namespace Scene {
         resetCommandProvider,
         BUILTIN_NODE_CREATE_TARGETS,
         BuiltinNodeCreateEntryId,
+        MotionPreviewDesc,
+        MotionPreviewDescNode,
         ISceneCommandProvider,
         SceneCommandProviderRegistration,
         SceneCommandRequestOptions,
@@ -11107,6 +11149,46 @@ export declare interface ISceneCommandProvider {
     notify?(module: string, method: string, args?: any[]): void;
     isConnect?(): boolean | undefined;
     dispose?(): void;
+}
+export declare interface MotionPreviewDesc {
+    motion: MotionPreviewDescNode | null;
+    variables: MotionPreviewVariable[];
+}
+export declare type MotionPreviewDescNode = {
+    kind: 'clip';
+    clipUuid: string | null;
+} | {
+    kind: 'blend-1d';
+    variable: string | null;
+    value: number;
+    children: {
+        motion: MotionPreviewDescNode | null;
+        threshold: number;
+    }[];
+} | {
+    kind: 'blend-2d';
+    variableX: string | null;
+    valueX: number;
+    variableY: string | null;
+    valueY: number;
+    algorithm?: number;
+    children: {
+        motion: MotionPreviewDescNode | null;
+        threshold: {
+            x: number;
+            y: number;
+        };
+    }[];
+} | {
+    kind: 'blend-direct';
+    children: {
+        motion: MotionPreviewDescNode | null;
+        weight: number;
+    }[];
+};
+export declare interface MotionPreviewVariable {
+    name: string;
+    value: number | null;
 }
 export declare function resetCommandProvider(): void;
 export declare interface SceneCommand {

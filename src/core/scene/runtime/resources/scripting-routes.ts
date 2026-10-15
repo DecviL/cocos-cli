@@ -116,7 +116,7 @@ export const scriptingRoutes = [
                     return next();
                 }
                 res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-                res.sendFile(macroPath);
+                res.sendFile(macroPath, { dotfiles: 'allow' });
             } catch (err) {
                 next(err);
             }
@@ -459,7 +459,7 @@ export const scriptingRoutes = [
                 const { default: scripting } = await import('../../../scripting/index');
                 const effectBinPath = join(scripting.projectPath, 'temp', 'asset-db', 'effect', 'effect.bin');
                 if (await pathExists(effectBinPath) && (await stat(effectBinPath)).isFile()) {
-                    res.sendFile(effectBinPath);
+                    res.sendFile(effectBinPath, { dotfiles: 'allow' });
                 } else {
                     next();
                 }
@@ -669,12 +669,13 @@ export const scriptingRoutes = [
             if (relPath.startsWith('/extras/')) {
                 const extraPath = join(GlobalPaths.workspace, 'node_modules', '@cocos', 'systemjs', 'dist', relPath);
                 if (await pathExists(extraPath) && (await stat(extraPath)).isFile()) {
-                    return res.sendFile(extraPath);
+                    return res.sendFile(extraPath, { dotfiles: 'allow' });
                 }
             }
             const resourcePath = join(facet.systemJsHomeDir, relPath);
             if (await pathExists(resourcePath) && (await stat(resourcePath)).isFile()) {
-                res.sendFile(resourcePath);
+                // Project roots may live under hidden directories, e.g. PinK's .agent workspace.
+                res.sendFile(resourcePath, { dotfiles: 'allow' });
             } else {
                 console.warn(`[Preview Server] SystemJS resource not found: ${resourcePath}`);
                 next();
