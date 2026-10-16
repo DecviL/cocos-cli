@@ -1,4 +1,5 @@
 import { backendView } from '../core/backend-view';
+import { queryRegisteredService } from '../core/decorator';
 import {
     Node,
     MeshRenderer,
@@ -186,8 +187,8 @@ class ComponentUtils {
         },
 
         Camera(component: Camera, node: Node) {
-            const { Service } = require('../core/decorator');
-            if (backendView.is2D) {
+            const is2D = queryRegisteredService<{ is2D: boolean }>('Camera')?.is2D ?? backendView.is2D;
+            if (is2D) {
                 component.visibility = Layers.makeMaskInclude([Layers.Enum.UI_3D, Layers.Enum.UI_2D]);
                 component.projection = Camera.ProjectionType.ORTHO;
                 component.near = 0;
