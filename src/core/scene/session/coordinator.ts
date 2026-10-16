@@ -12,6 +12,7 @@ export class SceneSessionCoordinator {
     private history: SceneSessionEvent[] = [];
     private operations = new Map<string, { fingerprint: string; promise: Promise<SceneCommandResult>; settled: boolean }>();
     private listeners = new Set<() => void>();
+    private resourceNotifications = new Set<Promise<void>>();
     constructor(private readonly provider: () => ISceneCommandProvider | null) {}
     get version(): SceneVersion { return { epoch: this.epoch, revision: this.revision }; }
     get cursor(): number { return this.sequence; }
@@ -20,6 +21,8 @@ export class SceneSessionCoordinator {
         this.epoch = randomUUID();
         this.revision = 0;
         this.operations.clear();
+        this.resourceNotifications.clear();
+        this.active = null;
         this.publish(['session:reset']);
     }
 
@@ -47,8 +50,10 @@ export class SceneSessionCoordinator {
         const epoch = this.epoch;
         return this.enqueue(async () => {
             this.assertEpoch(epoch);
+            if (this.resourceNotifications.size) await this.waitForResourceNotifications(epoch);
             const revision = this.revision;
             const value = await read(this.getProvider());
+            if (this.resourceNotifications.size) await this.waitForResourceNotifications(epoch);
             this.assertEpoch(epoch);
             if (revision !== this.revision) throw new SceneSessionError('CONFLICT', 'Scene changed during the read; request a fresh snapshot');
             return value;
@@ -56,6 +61,12 @@ export class SceneSessionCoordinator {
     }
 
     request(module: string, method: string, args: any[], options?: SceneCommandRequestOptions): Promise<any> {
+        // Apply can wait for a reload triggered by these internal Asset DB callbacks.
+        // They must reach the worker while Apply owns the command queue. Network
+        // commands still use execute(), and cannot enter this notification path.
+        if (module === 'Asset' && (method === 'assetChanged' || method === 'assetDeleted')) {
+            return this.requestResourceNotification(method, args, options);
+        }
         // Bake jobs may wait for a renderer. Their status/cancel must remain reachable.
         if (/^(LightmapBake|LightProbeBake|ReflectionProbe)$/.test(module)
             && /^(cancel|query|get)/.test(method)) {
@@ -91,6 +102,7 @@ export class SceneSessionCoordinator {
         const epoch = this.epoch;
         return this.enqueue(async () => {
             this.assertEpoch(epoch);
+            if (this.resourceNotifications.size) await this.waitForResourceNotifications(epoch);
             if (command && (command.expected?.epoch !== this.epoch || command.expected?.revision !== this.revision)) {
                 throw new SceneSessionError('CONFLICT', 'Scene changed; refresh before submitting a new operation');
             }
@@ -101,17 +113,53 @@ export class SceneSessionCoordinator {
             const mutation = !/^(query|get|has|is|can)/.test(method);
             try {
                 const value = await provider.request(module, method, args, options);
+                if (this.resourceNotifications.size) await this.waitForResourceNotifications(epoch);
                 this.assertEpoch(epoch);
                 return { value, version: { epoch, revision: this.revision + (mutation || active.events.size ? 1 : 0) } };
             } finally {
-                this.active = null;
-                // Failed engine commands may have made partial changes: invalidate even on failure.
-                if (epoch === this.epoch && (mutation || active.events.size)) {
-                    this.revision++;
-                    this.publish([...active.events, `${module}:${method}`], active);
+                try {
+                    // A failed command may also have started asynchronous resource work.
+                    if (epoch === this.epoch && this.resourceNotifications.size) {
+                        await this.waitForResourceNotifications(epoch);
+                    }
+                } finally {
+                    this.active = null;
+                    // Failed engine commands may have made partial changes: invalidate even on failure.
+                    if (epoch === this.epoch && (mutation || active.events.size)) {
+                        this.revision++;
+                        this.publish([...active.events, `${module}:${method}`], active);
+                    }
                 }
             }
         });
+    }
+
+    private async requestResourceNotification(method: string, args: any[], options?: SceneCommandRequestOptions): Promise<any> {
+        const epoch = this.epoch;
+        const provider = this.getProvider();
+        const request = (async () => {
+            try {
+                const value = await provider.request('Asset', method, args, options);
+                this.assertEpoch(epoch);
+                return value;
+            } finally {
+                // Failed notifications may have partially updated resource references.
+                if (epoch === this.epoch) this.invalidate(`Asset:${method}`);
+            }
+        })();
+        // Keep the original rejection for the notification caller, while barriers
+        // wait for completion without leaving the command queue permanently blocked.
+        const settled = request.then(() => undefined, () => undefined);
+        this.resourceNotifications.add(settled);
+        void settled.then(() => this.resourceNotifications.delete(settled));
+        return request;
+    }
+
+    private async waitForResourceNotifications(epoch: string): Promise<void> {
+        while (this.resourceNotifications.size) {
+            await Promise.all(this.resourceNotifications);
+            this.assertEpoch(epoch);
+        }
     }
 
     private enqueue<T>(operation: () => Promise<T>): Promise<T> {

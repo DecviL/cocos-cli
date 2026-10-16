@@ -33,6 +33,8 @@ jest.mock('../../base/i18n', () => ({
 
 import type { ISceneCommandProvider } from '../main-process/rpc';
 import { RpcProxy } from '../main-process/rpc';
+import { PrefabSoftReloadScheduler } from '../scene-process/service/prefab/soft-reload';
+import { ReloadResult } from '../common';
 
 interface FakeProcess extends EventEmitter {
     connected: boolean;
@@ -289,5 +291,64 @@ describe('main-process Scene RPC providers', () => {
         expect(() => rpc.notify('Editor', 'hasOpen')).toThrow(
             '[Node] Scene command provider does not support notify()',
         );
+    });
+
+    it('delivers asset changes during shared Apply before capturing its undo snapshot', async () => {
+        jest.useFakeTimers();
+        const order: string[] = [];
+        let tree = 'before reload';
+        let notification: Promise<void> | undefined;
+        const scheduler = new PrefabSoftReloadScheduler(async () => {
+            order.push('reload');
+            tree = 'after reload';
+            return ReloadResult.SUCCESS;
+        }, () => undefined, () => ({ uuid: 'scene', generation: 1 }));
+        const provider: ISceneCommandProvider = {
+            request: jest.fn(async (module, method) => {
+                if (module === 'Prefab' && method === 'applyPrefabChanges') {
+                    const waiter = scheduler.waitForAssetReload('prefab');
+                    order.push('saveAsset');
+                    await rpc.executeLocal('assetManager', 'saveAsset', ['prefab', '{}']);
+                    await waiter.promise;
+                    order.push(`capture:${tree}`);
+                    return true;
+                }
+                if (module === 'Asset' && method === 'assetChanged') {
+                    order.push('assetChanged');
+                    scheduler.schedule({ changedUuid: 'prefab', preserveUndoHistory: true });
+                    return;
+                }
+                throw new Error(`Unexpected command ${module}.${method}`);
+            }),
+        };
+        const { assetManager } = jest.requireMock('../../assets');
+        assetManager.saveAsset = jest.fn(async () => {
+            notification = rpc.request('Asset', 'assetChanged', ['prefab']);
+        });
+        try {
+            rpc.setCommandProvider(provider);
+            const owner = rpc.getSharedSession();
+            const expected = owner.version;
+            const apply = rpc.request('Prefab', 'applyPrefabChanges', [{ nodePath: '/Prefab' }]);
+            const snapshot = owner.read(async () => tree);
+
+            // The real reload debounce is 500 ms; the 10-second waiter must never be needed.
+            await jest.advanceTimersByTimeAsync(500);
+            expect(order).toEqual(['saveAsset', 'assetChanged', 'reload', 'capture:after reload']);
+            await expect(apply).resolves.toBe(true);
+            await expect(snapshot).resolves.toBe('after reload');
+            await notification;
+            expect(owner.events(expected.epoch, 0).events).toEqual([
+                expect.objectContaining({
+                    version: { epoch: expected.epoch, revision: expected.revision + 1 },
+                    events: expect.arrayContaining(['Asset:assetChanged', 'Prefab:applyPrefabChanges']),
+                }),
+            ]);
+        } finally {
+            await jest.runAllTimersAsync();
+            scheduler.invalidate();
+            delete assetManager.saveAsset;
+            jest.useRealTimers();
+        }
     });
 });

@@ -23,6 +23,13 @@ function backend() {
     return { request } satisfies ISceneCommandProvider;
 }
 
+function deferred() {
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail; });
+    return { promise, resolve, reject };
+}
+
 describe('shared scene ownership', () => {
     let server: SceneSessionServer | undefined;
     afterEach(async () => { await server?.close(); server = undefined; });
@@ -55,7 +62,7 @@ describe('shared scene ownership', () => {
         server = await createSceneSessionServer(owner, { project: 'project-A' });
         expect((await fetch(`${server.descriptor.url}/snapshot`)).status).toBe(401);
         const client = new SceneSessionClient(server.descriptor);
-        for (const [module, method] of [['__proto__', 'toString'], ['Editor', 'constructor'], ['Editor', 'queryRenderSnapshot']]) {
+        for (const [module, method] of [['__proto__', 'toString'], ['Editor', 'constructor'], ['Editor', 'queryRenderSnapshot'], ['Asset', 'assetChanged']]) {
             await expect(client.command({ module, method, source: 'x', operationId: '1', expected: owner.version }))
                 .rejects.toMatchObject({ code: 'METHOD_NOT_ALLOWED' });
         }
@@ -80,6 +87,105 @@ describe('shared scene ownership', () => {
         await expect(owner.request('Node', 'fail', [])).rejects.toThrow('partially mutated');
         await owner.request('Editor', 'queryCurrent', []);
         expect(owner.version.revision).toBe(3);
+    });
+
+    it.each(['assetChanged', 'assetDeleted'])('waits for an in-flight %s before snapshots and subsequent commands', async method => {
+        const resource = deferred();
+        let state = 'updating';
+        const calls: string[] = [];
+        const provider = { request: jest.fn(async (module: string, method: string) => {
+            calls.push(`${module}.${method}`);
+            if (module === 'Asset') { await resource.promise; state = 'ready'; }
+            return state;
+        }) };
+        const owner = new SceneSessionCoordinator(() => provider);
+        const notification = owner.request('Asset', method, ['prefab'], { timeout: 1234 });
+        const read = jest.fn(async () => state);
+        const snapshot = owner.read(read);
+        const command = owner.request('Editor', 'queryCurrent', []);
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(read).not.toHaveBeenCalled();
+        expect(calls).toEqual([`Asset.${method}`]);
+        expect(provider.request).toHaveBeenCalledWith('Asset', method, ['prefab'], { timeout: 1234 });
+
+        resource.resolve();
+        await notification;
+        await expect(snapshot).resolves.toBe('ready');
+        await expect(command).resolves.toBe('ready');
+        expect(owner.version.revision).toBe(1);
+    });
+
+    it('rejects a snapshot overlapped by a resource update instead of returning mixed state', async () => {
+        const reading = deferred();
+        const resource = deferred();
+        const finishRead = deferred();
+        const owner = new SceneSessionCoordinator(() => ({ request: async () => resource.promise }));
+        const snapshot = owner.read(async () => {
+            reading.resolve();
+            await finishRead.promise;
+            return 'partially updated snapshot';
+        });
+        const result = expect(snapshot).rejects.toMatchObject({ code: 'CONFLICT' });
+        await reading.promise;
+        const notification = owner.request('Asset', 'assetChanged', ['prefab']);
+        finishRead.resolve();
+        await new Promise<void>(resolve => setImmediate(resolve));
+        resource.resolve();
+        await notification;
+        await result;
+    });
+
+    it('drains resource work before completing a command even when that command fails', async () => {
+        const resource = deferred();
+        const notified = deferred();
+        let notification!: Promise<any>;
+        const provider = { request: async (module: string) => {
+            if (module === 'Asset') { notified.resolve(); await resource.promise; return; }
+            notification = owner.request('Asset', 'assetChanged', ['prefab']);
+            throw new Error('command failed after save');
+        } };
+        const owner = new SceneSessionCoordinator(() => provider);
+        const command = owner.request('Prefab', 'applyPrefabChanges', []);
+        const failure = expect(command).rejects.toThrow('command failed after save');
+        await notified.promise;
+        const read = jest.fn(async () => 'ready');
+        const snapshot = owner.read(read);
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(read).not.toHaveBeenCalled();
+        expect(owner.cursor).toBe(0);
+        resource.resolve();
+        await notification;
+        await failure;
+        await expect(snapshot).resolves.toBe('ready');
+        expect(owner.version.revision).toBe(1);
+        expect(owner.events(owner.version.epoch, 0).events[0].events)
+            .toEqual(['Asset:assetChanged', 'Prefab:applyPrefabChanges']);
+    });
+
+    it('propagates notification failures, invalidates partial updates and keeps the queue usable', async () => {
+        const resource = deferred();
+        const owner = new SceneSessionCoordinator(() => ({ request: async () => resource.promise }));
+        const notification = owner.request('Asset', 'assetChanged', ['prefab']);
+        const failure = expect(notification).rejects.toThrow('resource failed');
+        const snapshot = owner.read(async () => 'fresh snapshot');
+        resource.reject(new Error('resource failed'));
+        await failure;
+        await expect(snapshot).resolves.toBe('fresh snapshot');
+        expect(owner.version.revision).toBe(1);
+    });
+
+    it('rejects old resource completions after replacement without invalidating the new session', async () => {
+        const resource = deferred();
+        const owner = new SceneSessionCoordinator(() => ({ request: async () => resource.promise }));
+        const notification = owner.request('Asset', 'assetChanged', ['prefab']);
+        const failure = expect(notification).rejects.toMatchObject({ code: 'SESSION_REPLACED' });
+        owner.reset();
+        const version = owner.version;
+        await expect(owner.read(async () => 'new session')).resolves.toBe('new session');
+        resource.resolve();
+        await failure;
+        expect(owner.version).toEqual(version);
+        expect(owner.events(version.epoch, 0).events.map(event => event.events)).toEqual([['session:reset']]);
     });
 
     it('resynchronizes after worker replacement or an event log gap and rejects queued stale operations', async () => {
