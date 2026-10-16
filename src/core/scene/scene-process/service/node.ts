@@ -46,7 +46,7 @@ import { Canvas, CCClass, CCObject, Component, director, Node, Prefab, Quat, UIT
 import { createNodeByAsset, createShouldHideInHierarchyCanvasNode, loadAny, queryCanvasRequiredByAsset } from './node/node-create';
 import { getUICanvasNode, getUITransformParentNode, hasOneKindOfComponent, setLayer } from './node/node-utils';
 import { NodeUndoHelper } from './node/node-undo';
-import { NodeCreateDragManager } from './node/node-create-drag';
+import { createNodeCreateDragController, unavailableCreateDrag, type INodeCreateDragController } from './core/node-create-drag';
 import { isUndoApplying } from './undo/applying-state';
 import { prefabUtils } from './prefab/utils';
 import { sceneUtils } from './scene/utils';
@@ -124,30 +124,34 @@ export class NodeService extends BaseService<INodeEvents> implements INodeServic
     private readonly _preflightTokens = new Map<string, ICreatePreflightToken>();
     private _preflightTokenSequence = 0;
 
-    private readonly _createDrag = new NodeCreateDragManager({
-        resolveCanvasTransaction: (workMode, canvasRequired, parent, position, prefabCanvasHandling) =>
-            this._resolveCanvasRequiredTransaction(workMode, canvasRequired, parent, position, prefabCanvasHandling),
-        collectSceneNodeUuidsForUndo: () => this._collectSceneNodeUuidsForUndo(),
-        beginPrefabCanvasUndoCapture: beforeUuids => this._beginPrefabCanvasUndoCapture(beforeUuids),
-        endPrefabCanvasUndoCapture: () => this._endPrefabCanvasUndoCapture(),
-        recordCreateNodeCommand: (beforeUuids, paths, records) =>
-            this._recordCreateNodeCommand(beforeUuids, paths, records),
-    });
+    private _createDrag: INodeCreateDragController | undefined;
+
+    private getCreateDrag(): INodeCreateDragController | undefined {
+        return this._createDrag ??= createNodeCreateDragController({
+    resolveCanvasTransaction: (workMode, canvasRequired, parent, position, prefabCanvasHandling) =>
+                this._resolveCanvasRequiredTransaction(workMode, canvasRequired, parent, position, prefabCanvasHandling),
+            collectSceneNodeUuidsForUndo: () => this._collectSceneNodeUuidsForUndo(),
+            beginPrefabCanvasUndoCapture: beforeUuids => this._beginPrefabCanvasUndoCapture(beforeUuids),
+            endPrefabCanvasUndoCapture: () => this._endPrefabCanvasUndoCapture(),
+            recordCreateNodeCommand: (beforeUuids, paths, records) =>
+                this._recordCreateNodeCommand(beforeUuids, paths, records),
+        });
+    }
 
     async beginCreateDrag(params: IBeginCreateDragParams): Promise<BeginCreateDragResult> {
-        return this._createDrag.begin(params);
+        return this.getCreateDrag()?.begin(params) ?? unavailableCreateDrag();
     }
 
     async updateCreateDrag(params: IUpdateCreateDragParams): Promise<UpdateCreateDragResult> {
-        return this._createDrag.update(params);
+        return this.getCreateDrag()?.update(params) ?? unavailableCreateDrag();
     }
 
     async commitCreateDrag(params: ICommitCreateDragParams): Promise<CommitCreateDragResult> {
-        return this._createDrag.commit(params);
+        return this.getCreateDrag()?.commit(params) ?? unavailableCreateDrag();
     }
 
     async cancelCreateDrag(params: ICancelCreateDragParams): Promise<CancelCreateDragResult> {
-        return this._createDrag.cancel(params);
+        return this.getCreateDrag()?.cancel(params) ?? unavailableCreateDrag();
     }
 
     async serialize(params: ISerializeNodesParams): Promise<SerializedNodeData> {
@@ -1277,7 +1281,7 @@ export class NodeService extends BaseService<INodeEvents> implements INodeServic
 
     public onEditorClosed() {
         // 场景关闭/重载前结束拖拽预览，避免临时节点残留到下一个场景
-        void this._createDrag.cancelActive('disposed');
+        void this._createDrag?.cancelActive('disposed');
         // nodeMgr 清理 EditorExtends.Component 缓存前，先停止组件事件转发。
         Service.Component.unregisterCompMgrEvents();
         nodeMgr.onEditorClosed();
@@ -1286,7 +1290,8 @@ export class NodeService extends BaseService<INodeEvents> implements INodeServic
 
     public onEditorDisposed() {
         // 服务级销毁：退订生命周期事件并清空会话
-        this._createDrag.dispose();
+        this._createDrag?.dispose();
+        this._createDrag = undefined;
     }
 
     public async previewSetProperty(options: ISetPropertyOptions): Promise<boolean> {

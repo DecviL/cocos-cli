@@ -15,6 +15,9 @@ export type { FilterPluginOptions, IPluginScriptInfo } from '../../core/scriptin
 export type { AnimGraphVariantDump } from '../../core/assets/animation-graph-variant';
 
 export async function init(): Promise<void> {
+    const { default: project } = await import('../../core/project');
+    const { ensureProjectOwnership } = await import('../../core/project-backend/ownership');
+    await ensureProjectOwnership(project.path);
     // 初始化资源数据库
     const { initAssetDB } = await import('../../core/assets');
     await initAssetDB();
@@ -769,4 +772,3 @@ export function onAssetChanged(listener: (info: IAssetInfo) => void): () => void
 export function onAssetRemoved(listener: (info: IAssetInfo) => void): () => void {
     return assetManager.onAssetRemoved(listener);
 }
-
