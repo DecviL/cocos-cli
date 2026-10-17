@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { TimerUtil } from './utils/timer-util';
-import type { IMessageManagerEvents } from '../../common';
+import type { IChangeNodeOptions, IMessageManagerEvents } from '../../common';
 
 type MessageEvent = keyof IMessageManagerEvents;
 
@@ -45,9 +45,12 @@ class MessageManager {
         // Key by uuid (Creator parity): keying by the node object would pin destroyed nodes in the
         // throttle map and grow it without bound during long preview sessions (GC pressure).
         const node = args[0];
-        const key: string = node && typeof node === 'object' && typeof node.uuid === 'string'
+        const uuid: string = node && typeof node === 'object' && typeof node.uuid === 'string'
             ? node.uuid
             : String(node);
+        const options = args[1] as IChangeNodeOptions | undefined;
+        // 同节点的不同变更必须独立保留，否则布局产生的 position 通知会吞掉 Widget 属性通知
+        const key = JSON.stringify([uuid, options?.type, options?.propPath]);
         this._timerUtil.callFunctionLimit(key, this.broadcast.bind(this), 'node:change', ...args);
     }
 }
