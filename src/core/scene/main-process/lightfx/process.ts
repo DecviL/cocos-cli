@@ -4,10 +4,7 @@ import { existsSync } from 'fs';
 import { createServer, type Server as HttpServer } from 'http';
 import { join } from 'path';
 import { GlobalPaths } from '../../../../global';
-
-// LightFX embeds a Socket.IO 2.x client. Keep the legacy server in the Node host so the browser
-// Scene runtime never has to load either Socket.IO or Node's networking/process modules.
-const createLegacySocketServer = require('socket.io-v2') as (server: HttpServer, options: object) => any;
+import { createLightFXSocketServer } from './socket-server';
 
 export interface LightFXProcessOptions {
     cwd: string;
@@ -69,10 +66,7 @@ export class LightFXProcess {
             void (async () => {
                 try {
                     this.http = createServer();
-                    this.io = createLegacySocketServer(this.http, {
-                        serveClient: false,
-                        transports: ['websocket', 'polling'],
-                    });
+                    this.io = createLightFXSocketServer(this.http);
                     this.io.on('connection', (socket: any) => {
                         socket.once('Login', () => socket.emit('Start'));
                         socket.on('Log', (data: unknown) => options.onLog?.(String(data)));
