@@ -1,12 +1,12 @@
-# CLI 项目后端单实例
+# CLI 项目后端发现与生命周期
 
-> 本文描述独立 CLI / Worker 后端的所有权与兼容共享会话。PinK 已选择 Webview 持有唯一编辑场景，MCP 经已有 Provider/Broker 路由到该场景；不得为该会话再调用 ensure 启动第二份 Worker。资源后端的项目独占仍适用。私有模块接入见其 `docs/zh/host-runtime.md`。
+> 本文描述独立 CLI / Worker 后端的发现与兼容共享会话。PinK 已选择 Webview 持有唯一编辑场景，MCP 经已有 Provider/Broker 路由到该场景；不得为该会话再调用 ensure 启动第二份 Worker。私有模块接入见其 `docs/zh/host-runtime.md`。
 
 ## 责任和边界
 
-CLI 负责保证**本机、同一项目只有一个项目后端所有者**。IDE 调用发现/启动接口，scene-editor 连接返回的场景会话。不同项目可使用不同后端进程；同一个 CLI 进程内的资源、脚本和引擎模块仍是单项目实例。
+CLI 为每个后端进程动态分配本机控制端口，**不保证同一项目只有一个后端进程**。IDE 调用发现/启动接口，scene-editor 连接返回的场景会话。不同项目不会复用持久化的控制端口；同一个 CLI 进程内的资源、脚本和引擎模块仍是单项目实例。
 
-`Launcher.import/startup/build` 在初始化日志、配置、引擎、脚本和资源库前取得项目所有权。第二个 Launcher/CLI 进程不能初始化同一个项目。低层 SDK 的 `Configuration.init`、`Project.init`、`Scripting.init`、`Assets.init` 和 `Scene.startupWorker` 也复用同一所有权检查。
+`Launcher.import/startup/build` 在初始化日志、配置、引擎、脚本和资源库前建立当前进程的控制端点。低层 SDK 的 `Configuration.init`、`Project.init`、`Scripting.init`、`Assets.init` 和 `Scene.startupWorker` 也复用当前进程的控制端点，不会创建项目级文件锁。
 
 MCP 和共享场景接口在 CLI 后端进程中提供，场景引擎由该后端的 Worker 执行；scene-editor/IDE 进程不另开项目资源库和 Worker。
 
@@ -49,10 +49,10 @@ await stopProjectBackend(backend);
 
 | 接口 | 行为 |
 | --- | --- |
-| `discoverProjectBackend(project)` | 校验规范项目路径及活后端身份；返回实时描述符或 `null`；占用/身份异常抛错 |
-| `startProjectBackend(project, options?)` | 启动独立后端；已有所有者或并发输掉竞争时报 `ALREADY_RUNNING`，不替换它 |
-| `ensureProjectBackend(project, options?)` | 有后端则等待就绪并复用；没有才启动；并发竞争失败后连接获胜者 |
-| `stopProjectBackend(descriptor)` | 校验 ownerId/token 后请求正常关闭并等待；旧描述符不能关闭替换后的新后端 |
+| `discoverProjectBackend(project)` | 读取最后发布的连接信息并校验活后端身份；返回实时描述符或 `null` |
+| `startProjectBackend(project, options?)` | 启动新的独立后端，通过父子进程 IPC 返回该实例的就绪描述符 |
+| `ensureProjectBackend(project, options?)` | 有可发现后端则等待就绪并复用；没有才启动；同一调用进程内合并并发启动请求 |
+| `stopProjectBackend(descriptor)` | 通过指定实例的控制地址、ownerId/token 请求正常关闭并等待，不依赖最后发布的 owner.json |
 | `Project.close()` | 关闭当前进程持有的项目后端；适用于自行使用低层 SDK 初始化项目的宿主 |
 
 `StartProjectBackendOptions`：`port` 为新后端 MCP HTTP 服务首选端口；`allowedOrigins` 为新后端场景服务白名单；`executable` 可指定 Node 路径；`startupTimeoutMs` 默认 180 秒；`requireMcp` 默认 true。连接一个不提供 MCP 的 SDK 后端时显式设 `requireMcp: false`。
@@ -61,31 +61,31 @@ await stopProjectBackend(backend);
 
 `state` 为 `initializing/ready/stopping/failed`。初始化超时只表示调用方停止等待，不会杀死正在初始化的所有者；后续可以重新发现。已有后端缺少 MCP 时返回 `CAPABILITY_MISSING`，不会为了补能力再启动第二个项目。
 
-引擎初始化可能短暂阻塞后端的控制端点；`ensure` 在启动期限内重试发现和等待。端点未响应不会被视为“没有所有者”，也不会触发另开实例；明确的项目身份或端口冲突仍直接报错。
+发现是尽力而为的连接提示：已经失效、身份不符或超时的旧地址不会作为当前项目的活后端，不阻止重新启动。通过已持有描述符查询或关闭指定实例时，控制端点超时仍返回 `BACKEND_UNREACHABLE`。跨进程启动不再保证单实例。
 
 ## 命令行和生命周期
 
-原来的 `cocos start-mcp-server --project ...` 也会取得项目所有权并提供共享场景服务。重复命令返回明确错误，IDE 要复用时使用 `ensureProjectBackend`。`--scene-session-file` 仍可额外导出场景连接描述符；它不是互斥锁。
+原来的 `cocos start-mcp-server --project ...` 也会建立控制端点并提供共享场景服务。重复命令可以启动另一个实例，IDE 要复用时使用 `ensureProjectBackend`。`--scene-session-file` 仍可额外导出场景连接描述符。MCP HTTP 服务的端口选择仍由服务器处理，与动态控制端口独立。
 
-普通构建/导入也会持有所有权；同一项目正在被另一个后端使用时，独立构建入口不会同时再开资源库。可以通过已有后端的 MCP 构建接口执行，或先正常关闭后端再做独立构建。
+普通构建/导入也会建立当前进程的控制端点；独立进程之间不再互斥。多个后端并发修改同一项目时，需要由调用方协调，或通过已有后端的 MCP 接口执行。
 
-`Launcher.close()` 按顺序关闭场景服务、Worker、HTTP 服务、资源库、脚本服务并保存项目元数据，最后释放所有权。初始化中途失败会清理已经启动的部分。未确认写入者已停止时不会释放所有权，状态变为 `failed`；需要诊断并处理该后端，而不是超时强行接管。
+`Launcher.close()` 按顺序关闭场景服务、Worker、HTTP 服务、资源库、脚本服务并保存项目元数据，最后关闭本实例的控制端点。初始化中途失败会清理已经启动的部分。清理失败时保留控制端点并将状态设为 `failed`，供调用方诊断处理。
 
-## 所有权机制
+## 控制端点与发现
 
-1. `realpath` 解析项目路径，Windows 统一大小写，避免相对路径、目录别名和 junction 启动两份后端。
-2. 首次在 `temp/.cocos-cli-backend/rendezvous/port.json` 固定项目的本机控制端口。先在临时目录完整写入，再将非空目录原子重命名为 `rendezvous`；已有非空目录无法被覆盖，同时启动者只能采用同一个注册结果。只使用此目录格式，不读取或迁移旧的 `rendezvous.json`。
-3. 进程必须独占绑定这个 loopback 端口，才能初始化项目。**操作系统持有的 socket 是互斥依据**；PID、文件时间、描述符文件的存在都不是所有权依据。
-4. `owner.json` 只提供本次启动的身份与访问凭据；状态及服务地址通过认证后的 `/status` 实时获取，不依赖文件中的旧状态。发现接口同时校验项目身份、随机 ownerId 和 token。端口被无关程序占用、后端失联或身份不符时拒绝启动，不换一个端口悄悄再开实例。
-5. 进程异常退出后，操作系统释放 socket。新进程可沿用注册端口取得所有权并生成新 ownerId/token；旧元信息、旧 PID 或旧连接凭据不妨碍恢复，也不能授权关闭新所有者。
+1. `realpath` 解析项目路径，Windows 统一大小写，让相对路径、目录别名和 junction 使用同一个项目身份。
+2. 每次启动通过 `listen(0, '127.0.0.1')` 让操作系统分配当前空闲的控制端口。不创建、读取或迁移 `rendezvous/port.json`、`rendezvous.json`。
+3. 控制端点监听成功后，将本次控制地址、随机 ownerId、PID 和 token 原子写入 `temp/.cocos-cli-backend/owner.json`。不同后端独立监听；该文件只指向最后一次发布的实例，不承担互斥职责。
+4. 发现接口从 `owner.json` 取得连接信息，再校验控制端点的项目身份和 ownerId，通过认证后的 `/status` 获取实时状态和服务地址，不依赖文件中的旧 PID 或状态。启动 SDK 通过父子进程 IPC 接收新实例的描述符，避免并发发布时误认其他实例。
+5. 关闭或崩溃后，操作系统释放该实例的端口。保留的 `owner.json` 仅为可能失效的发现提示，后续启动会覆盖；关闭时不删除文件，避免误删其他实例刚发布的连接信息。旧凭据不能授权关闭另一个实例。
 
-不要在活后端运行时删除或复制这份 rendezvous 注册目录。正常关闭保留它，清除当前 owner 元信息。若注册端口被其他程序占用，需要先释放冲突；只有确认项目没有活后端时，才可重置该项目的注册信息。文件系统需要支持同卷目录原子重命名，无需硬链接，可用于 NTFS 和 exFAT。不完整或损坏的注册信息会明确报错，不降级成有竞争窗口的 PID 文件锁。新旧版本使用不同的注册路径，不支持混用打开同一项目；升级前需关闭旧后端并统一升级所有启动入口。
+无需硬链接或新增原生依赖，可用于 NTFS 和 exFAT。新启动不依赖之前的控制端口，旧端口被其他项目或程序占用不会阻止分配新的空闲控制端口。升级前需要关闭旧后端并统一升级启动入口；旧版仍依赖固定端口注册，不能与新版协调启动。
 
-这里保障本机 CLI 后端之间的互斥，不是跨机器共享盘锁，也不能约束其他版本编辑器或绕过 CLI 启动接口直接写项目的外部程序。后端崩溃后的未保存场景恢复仍需单独的恢复日志，单实例机制本身不会恢复内存数据。
+这里提供后端发现和生命周期管理，不提供项目单实例保护或跨机器共享盘锁。后端崩溃后的未保存场景恢复仍需单独的恢复日志。
 
 ## 验证
 
-单元/进程测试覆盖首次并发抢占、初始化中拒绝重复启动、路径别名、不同项目、异常退出恢复、旧凭据失效、无关端口占用、关闭期间持锁和初始化失败清理。
+单元/进程测试覆盖并发动态端口分配、路径别名、不同项目、异常退出恢复、旧凭据失效、旧端口被占用后启动、实例独立关闭和初始化失败清理。
 
 真实 CLI 后端测试（需要已构建的 `dist` 和本机引擎依赖）：
 

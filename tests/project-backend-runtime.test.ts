@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { readFile } from 'node:fs/promises';
-import { ensureProjectBackend, startProjectBackend, stopProjectBackend } from '../src/core/project-backend/client';
+import { ensureProjectBackend, stopProjectBackend } from '../src/core/project-backend/client';
 import { discoverProjectBackend, type ProjectBackendDescriptor } from '../src/core/project-backend/ownership';
 import { SceneSessionClient } from '../src/core/scene/session/client';
 
@@ -22,15 +22,15 @@ integration('real managed CLI backend lifecycle', () => {
             expect(owner.mcpUrl).toMatch(/\/mcp$/);
             const snapshot = await new SceneSessionClient(owner.sceneSession!).snapshot();
             expect(snapshot.project).toBe(owner.project);
-            await expect(startProjectBackend(project)).rejects.toMatchObject({ code: 'ALREADY_RUNNING' });
+            expect((await ensureProjectBackend(project)).ownerId).toBe(owner.ownerId);
             const first = owner;
             await stopProjectBackend(first);
-            await expect(readFile(resolve(project, 'temp/.cocos-cli-backend/owner.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+            expect(JSON.parse(await readFile(resolve(project, 'temp/.cocos-cli-backend/owner.json'), 'utf8')).ownerId).toBe(first.ownerId);
             owner = undefined;
             expect(await discoverProjectBackend(project)).toBeNull();
             owner = await ensureProjectBackend(project);
             expect(owner.ownerId).not.toBe(first.ownerId);
-            await expect(stopProjectBackend(first)).rejects.toMatchObject({ code: 'OWNER_CHANGED' });
+            await stopProjectBackend(first).catch(error => { if (error.code !== 'OWNER_CHANGED') throw error; });
             expect((await new SceneSessionClient(owner.sceneSession!).snapshot()).project).toBe(owner.project);
         } finally {
             // Only stop the owner started by this test, never a separately replaced owner.
