@@ -1,6 +1,6 @@
 // Spawned by Project.ensureProjectBackend. No editor/private-package dependency.
 import { startServer } from '../../mcp/start-server';
-import { ProjectBackendError, currentProjectOwnership } from './ownership';
+import { currentProjectOwnership } from './ownership';
 
 async function main() {
     const project = process.argv[2];
@@ -17,11 +17,14 @@ async function main() {
     process.once('SIGINT', () => { void close().catch(() => undefined); });
     process.once('SIGTERM', () => { void close().catch(() => undefined); });
     (await currentProjectOwnership())?.onShutdown(close);
+    // A project may have multiple backends; report this instance directly to its caller.
+    if (process.send) {
+        process.send({ type: 'project-backend-ready', backend: (await currentProjectOwnership())?.descriptor }, () => undefined);
+    }
 }
 void main().catch(async error => {
     console.error(error);
-    // Failed cleanup may leave writers alive. Keep ownership until the process is
-    // explicitly terminated, rather than letting another backend start alongside it.
+    // Failed cleanup may leave writers alive. Keep this instance discoverable for diagnosis.
     if ((await currentProjectOwnership())?.descriptor.state === 'failed') return;
-    process.exit(error instanceof ProjectBackendError && error.code === 'ALREADY_RUNNING' ? 73 : 1);
+    process.exit(1);
 });
