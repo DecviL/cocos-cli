@@ -35,26 +35,28 @@ async function locate(project: string): Promise<Location> {
     project = await canonicalProject(project);
     const directory = join(project, 'temp', '.cocos-cli-backend');
     return { project, key: createHash('sha256').update(project).digest('hex'), directory,
-        registry: join(directory, 'rendezvous.json'), owner: join(directory, 'owner.json') };
+        registry: join(directory, 'rendezvous'), owner: join(directory, 'owner.json') };
 }
 async function readRegistry(location: Location): Promise<Registry | null> {
-    let directory: boolean;
-    try {
-        directory = (await stat(location.registry)).isDirectory();
-    } catch (error: any) {
-        if (error.code === 'ENOENT') return null;
-        throw new ProjectBackendError('INVALID_REGISTRY', `Invalid backend rendezvous: ${location.registry}`);
+    // Reuse an existing legacy registry in place, retaining its selected port and format.
+    for (const path of [join(location.directory, 'rendezvous.json'), location.registry]) {
+        let directory: boolean;
+        try {
+            directory = (await stat(path)).isDirectory();
+        } catch (error: any) {
+            if (error.code === 'ENOENT') continue;
+            throw new ProjectBackendError('INVALID_REGISTRY', `Invalid backend rendezvous: ${path}`);
+        }
+        try {
+            const filename = directory ? join(path, 'port.json') : path;
+            const registry = JSON.parse(await readFile(filename, 'utf8')) as Registry;
+            if (registry.protocol !== 1 || !Number.isInteger(registry.port) || registry.port < 1 || registry.port > 65535) throw new Error('Invalid rendezvous');
+            return registry;
+        } catch {
+            throw new ProjectBackendError('INVALID_REGISTRY', `Invalid backend rendezvous: ${path}`);
+        }
     }
-    try {
-        // Older releases published a regular file at this same path. Never replace it:
-        // both formats must retain the selected port across restarts and upgrades.
-        const filename = directory ? join(location.registry, 'port.json') : location.registry;
-        const registry = JSON.parse(await readFile(filename, 'utf8')) as Registry;
-        if (registry.protocol !== 1 || !Number.isInteger(registry.port) || registry.port < 1 || registry.port > 65535) throw new Error('Invalid rendezvous');
-        return registry;
-    } catch {
-        throw new ProjectBackendError('INVALID_REGISTRY', `Invalid backend rendezvous: ${location.registry}`);
-    }
+    return null;
 }
 async function atomicWrite(filename: string, value: unknown): Promise<void> {
     const temporary = `${filename}.${randomUUID()}.tmp`;
@@ -151,7 +153,8 @@ export class ProjectBackendLease {
         await mkdir(location.directory, { recursive: true, mode: 0o700 });
         // Publish a complete, non-empty directory by atomic rename (also supported on exFAT).
         // A non-empty destination cannot be replaced, so simultaneous publishers cannot
-        // overwrite each other's selected port. Keep the legacy path to block old publishers too.
+        // overwrite each other's selected port. Mixed-version startup with legacy publishers
+        // is unsupported because they do not recognize the new directory path.
         // Never unlink/replace this registry on shutdown: all contenders must bind the same OS resource.
         for (;;) {
             const registry = await readRegistry(location);
