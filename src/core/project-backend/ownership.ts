@@ -38,25 +38,19 @@ async function locate(project: string): Promise<Location> {
         registry: join(directory, 'rendezvous'), owner: join(directory, 'owner.json') };
 }
 async function readRegistry(location: Location): Promise<Registry | null> {
-    // Reuse an existing legacy registry in place, retaining its selected port and format.
-    for (const path of [join(location.directory, 'rendezvous.json'), location.registry]) {
-        let directory: boolean;
-        try {
-            directory = (await stat(path)).isDirectory();
-        } catch (error: any) {
-            if (error.code === 'ENOENT') continue;
-            throw new ProjectBackendError('INVALID_REGISTRY', `Invalid backend rendezvous: ${path}`);
-        }
-        try {
-            const filename = directory ? join(path, 'port.json') : path;
-            const registry = JSON.parse(await readFile(filename, 'utf8')) as Registry;
-            if (registry.protocol !== 1 || !Number.isInteger(registry.port) || registry.port < 1 || registry.port > 65535) throw new Error('Invalid rendezvous');
-            return registry;
-        } catch {
-            throw new ProjectBackendError('INVALID_REGISTRY', `Invalid backend rendezvous: ${path}`);
-        }
+    try {
+        await stat(location.registry);
+    } catch (error: any) {
+        if (error.code === 'ENOENT') return null;
+        throw new ProjectBackendError('INVALID_REGISTRY', `Invalid backend rendezvous: ${location.registry}`);
     }
-    return null;
+    try {
+        const registry = JSON.parse(await readFile(join(location.registry, 'port.json'), 'utf8')) as Registry;
+        if (registry.protocol !== 1 || !Number.isInteger(registry.port) || registry.port < 1 || registry.port > 65535) throw new Error('Invalid rendezvous');
+        return registry;
+    } catch {
+        throw new ProjectBackendError('INVALID_REGISTRY', `Invalid backend rendezvous: ${location.registry}`);
+    }
 }
 async function atomicWrite(filename: string, value: unknown): Promise<void> {
     const temporary = `${filename}.${randomUUID()}.tmp`;

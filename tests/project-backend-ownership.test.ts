@@ -1,5 +1,5 @@
 import { fork, type ChildProcess } from 'node:child_process';
-import { mkdtemp, readFile, writeFile, rm, mkdir, symlink, readdir, rename } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, mkdir, symlink, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:http';
@@ -60,25 +60,6 @@ describe('project backend ownership across processes', () => {
         await expect(stopProjectBackend(old)).rejects.toMatchObject({ code: 'OWNER_CHANGED' });
         const response = await fetch(`${old.url}/shutdown`, { method: 'POST', headers: { authorization: `Bearer ${old.token}` } });
         expect(response.status).toBe(401);
-    });
-
-    it.each(['file', 'directory'])('reuses a legacy %s registry without replacing its port or format', async (format) => {
-        const first = await ProjectBackendLease.acquire(project);
-        await first.release();
-        const registry = join(project, 'temp/.cocos-cli-backend/rendezvous');
-        const legacy = join(project, 'temp/.cocos-cli-backend/rendezvous.json');
-        const original = await readFile(join(registry, 'port.json'), 'utf8');
-        if (format === 'directory') {
-            await rename(registry, legacy);
-        } else {
-            await rm(registry, { recursive: true });
-            await writeFile(legacy, original);
-        }
-        const next = await ProjectBackendLease.acquire(project); leases.push(next);
-        expect(next.descriptor.url).toBe(first.descriptor.url);
-        expect(await readFile(format === 'directory' ? join(legacy, 'port.json') : legacy, 'utf8')).toBe(original);
-        expect((await readdir(join(project, 'temp/.cocos-cli-backend'))).sort()).toEqual(['owner.json', 'rendezvous.json']);
-        await expect(ProjectBackendLease.acquire(project)).rejects.toMatchObject({ code: 'ALREADY_RUNNING' });
     });
 
     it('fails closed on incomplete or corrupt directory registries', async () => {
