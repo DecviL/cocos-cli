@@ -237,6 +237,46 @@ describe('restoreNodeStructureSnapshot asset map registration', () => {
         delete (global as any).cc;
     });
 
+    it('restores a deleted node when another UUID has reused its saved path', async () => {
+        const parent = Object.assign(new MockNode('parent', 'Parent'), {
+            addChild(this: MockNode, child: MockNode) {
+                child.parent = this;
+                this.children.push(child);
+            },
+        });
+        const existing = new MockNode('other-node', 'Cube');
+        parent.addChild(existing);
+        const restored = new MockNode('deleted-node', 'Cube');
+        mockLoadWithJson.mockImplementation((_json, _options, callback) => callback(null, restored));
+
+        const shared = require('../scene-process/service/undo/commands/command-utils-shared');
+        shared.getEditorNodeManager.mockReturnValue({
+            getNode: (uuid: string) => uuid === parent.uuid ? parent : null,
+            getNodeByPath: () => existing,
+        });
+        shared.isNodeInCurrentScene.mockImplementation((node: MockNode) =>
+            node === parent || parent.children.includes(node),
+        );
+        const nodeMgr = require('../scene-process/service/node/index').default;
+        nodeMgr.emit = jest.fn();
+        const { restoreNodeStructureSnapshot } = require(
+            '../scene-process/service/undo/commands/node-structure-command-utils'
+        );
+        const result = await restoreNodeStructureSnapshot({
+            uuid: restored.uuid,
+            path: 'Cube',
+            parentUuid: parent.uuid,
+            parentPath: '/',
+            siblingIndex: 0,
+            serializedJson: '{}',
+            uuidTree: { uuid: restored.uuid, componentUuids: [], children: [] },
+        }, { id: 'remove-node', label: 'Remove Node', type: 'node:remove', scope: {}, timestamp: 1 });
+
+        expect(result.success).toBe(true);
+        expect(parent.children.map(node => node.uuid)).toEqual([existing.uuid, restored.uuid]);
+        expect(mockLoadWithJson).toHaveBeenCalledTimes(1);
+    });
+
     it.each([false, true])('keeps UUID and path indexes consistent when restored objects are already registered: %s', async registered => {
         const { default: NodeManager } = await import('../../engine/editor-extends/manager/node');
         const { default: ComponentManager } = await import('../../engine/editor-extends/manager/component');

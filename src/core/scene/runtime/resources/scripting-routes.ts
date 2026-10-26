@@ -1,3 +1,4 @@
+import { describeChunkImport } from './module-diagnostic';
 import type { Request, Response, NextFunction } from 'express';
 import path, { isAbsolute, join, relative } from 'path';
 import { pathExists, stat, readFile } from 'fs-extra';
@@ -106,6 +107,20 @@ function getAssetLibraryBaseUrl(serverBaseUrl: string): string {
  * 不包含各自专属的 `/` 入口路由。
  */
 export const scriptingRoutes = [
+    {
+        url: '/scripting/module-diagnostic',
+        async handler(req: Request, res: Response, next: NextFunction): Promise<Response | void> {
+            res.setHeader('Cache-Control', 'no-store');
+            if (typeof req.query.chunk !== 'string' || typeof req.query.specifier !== 'string') return res.sendStatus(400);
+            try {
+                const { default: scripting } = await import('../../../scripting/index');
+                const recordPath = join(scripting.projectPath, 'temp/programming/packer-driver/targets/preview/main-record.json');
+                const record = JSON.parse(await readFile(recordPath, 'utf8'));
+                const diagnostic = describeChunkImport(record, req.query.chunk, req.query.specifier);
+                return diagnostic ? res.json(diagnostic) : res.sendStatus(404);
+            } catch (error) { return next(error); }
+        },
+    },
 {
         url: '/userland/macro',
         async handler(req: Request, res: Response, next: NextFunction): Promise<Response | void> {
@@ -490,6 +505,7 @@ export const scriptingRoutes = [
 
             // Special handling for pack import-map and resolution-detail-map
             if (url === 'pack-import-map-url') {
+                res.setHeader('Cache-Control', 'no-store');
                 try {
                     const resource = await facet.loadPackResource(facet.packImportMapURL);
                     if (resource.type === 'json') {

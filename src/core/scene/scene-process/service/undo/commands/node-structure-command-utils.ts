@@ -210,9 +210,9 @@ export function removeNodeStructureSnapshot(
 
 function findNode(snapshot: INodeStructureSnapshot): Node | null {
     const editorNode = getEditorNodeManager();
-    const byUuid = editorNode?.getNode?.(snapshot.uuid) as Node | null;
-    if (isNodeInCurrentScene(byUuid)) {
-        return byUuid;
+    const nodeByUuid = editorNode?.getNode?.(snapshot.uuid) as Node | null;
+    if (isNodeInCurrentScene(nodeByUuid)) {
+        return nodeByUuid;
     }
 
     if (!snapshot.path) {
@@ -220,8 +220,13 @@ function findNode(snapshot: INodeStructureSnapshot): Node | null {
     }
 
     try {
-        const byPath = editorNode?.getNodeByPath?.(snapshot.path) as Node | null;
-        return isNodeInCurrentScene(byPath) ? byPath : null;
+        const nodeByPath = editorNode?.getNodeByPath?.(snapshot.path) as Node | null;
+        // 例如快照记录 { uuid: 'B', path: '/Cube' }，按 UUID 未找到当前场景中的有效节点 B
+        // 旧路径 '/Cube' 却可能指向另一个节点 A；直接返回会导致漏恢复 B 或误删 A
+        // path 已用于查找候选节点，这里用 UUID 确认身份，无需再比较 path
+        return isNodeInCurrentScene(nodeByPath) && nodeByPath.uuid === snapshot.uuid
+            ? nodeByPath
+            : null;
     } catch (_error) {
         return null;
     }
