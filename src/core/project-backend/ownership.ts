@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { mkdir, readFile, writeFile, link, unlink, rename, realpath, stat } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, unlink, rename, realpath, stat, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SceneSessionDescriptor } from '../scene/session/protocol';
 
@@ -38,12 +38,21 @@ async function locate(project: string): Promise<Location> {
         registry: join(directory, 'rendezvous.json'), owner: join(directory, 'owner.json') };
 }
 async function readRegistry(location: Location): Promise<Registry | null> {
+    let directory: boolean;
     try {
-        const registry = JSON.parse(await readFile(location.registry, 'utf8')) as Registry;
-        if (registry.protocol !== 1 || !Number.isInteger(registry.port) || registry.port < 1 || registry.port > 65535) throw new Error('Invalid rendezvous');
-        return registry;
+        directory = (await stat(location.registry)).isDirectory();
     } catch (error: any) {
         if (error.code === 'ENOENT') return null;
+        throw new ProjectBackendError('INVALID_REGISTRY', `Invalid backend rendezvous: ${location.registry}`);
+    }
+    try {
+        // Older releases published a regular file at this same path. Never replace it:
+        // both formats must retain the selected port across restarts and upgrades.
+        const filename = directory ? join(location.registry, 'port.json') : location.registry;
+        const registry = JSON.parse(await readFile(filename, 'utf8')) as Registry;
+        if (registry.protocol !== 1 || !Number.isInteger(registry.port) || registry.port < 1 || registry.port > 65535) throw new Error('Invalid rendezvous');
+        return registry;
+    } catch {
         throw new ProjectBackendError('INVALID_REGISTRY', `Invalid backend rendezvous: ${location.registry}`);
     }
 }
@@ -140,7 +149,9 @@ export class ProjectBackendLease {
     static async acquire(project: string): Promise<ProjectBackendLease> {
         const location = await locate(project);
         await mkdir(location.directory, { recursive: true, mode: 0o700 });
-        // Publish the selected port exactly once using an atomic hard link of a complete JSON file.
+        // Publish a complete, non-empty directory by atomic rename (also supported on exFAT).
+        // A non-empty destination cannot be replaced, so simultaneous publishers cannot
+        // overwrite each other's selected port. Keep the legacy path to block old publishers too.
         // Never unlink/replace this registry on shutdown: all contenders must bind the same OS resource.
         for (;;) {
             const registry = await readRegistry(location);
@@ -163,13 +174,17 @@ export class ProjectBackendLease {
             if (!registry) {
                 const candidate = join(location.directory, `rendezvous.${randomUUID()}.tmp`);
                 try {
-                    await writeFile(candidate, JSON.stringify({ protocol: 1, port }), { mode: 0o600 });
-                    await link(candidate, location.registry);
+                    await mkdir(candidate, { mode: 0o700 });
+                    await writeFile(join(candidate, 'port.json'), JSON.stringify({ protocol: 1, port }), { mode: 0o600 });
+                    await rename(candidate, location.registry);
                 } catch (error: any) {
                     await lease.closeListener();
-                    if (error.code === 'EEXIST') continue;
+                    // Windows may report EPERM/EACCES when the destination already exists.
+                    // Retry only after verifying a complete registry, never on permission errors alone.
+                    if (['EEXIST', 'ENOTEMPTY', 'ENOTDIR', 'EPERM', 'EACCES'].includes(error.code)
+                        && await readRegistry(location)) continue;
                     throw error;
-                } finally { await unlink(candidate).catch(() => undefined); }
+                } finally { await rm(candidate, { recursive: true, force: true }).catch(() => undefined); }
             }
             try { await atomicWrite(location.owner, lease.descriptor); }
             catch (error) { await lease.closeListener(); throw error; }

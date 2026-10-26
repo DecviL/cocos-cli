@@ -1,5 +1,5 @@
 import { fork, type ChildProcess } from 'node:child_process';
-import { mkdtemp, readFile, writeFile, rm, mkdir, symlink } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, mkdir, symlink, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:http';
@@ -11,7 +11,7 @@ describe('project backend ownership across processes', () => {
     const children: ChildProcess[] = [];
     const leases: ProjectBackendLease[] = [];
     let next = 0;
-    beforeEach(async () => { project = await mkdtemp(join(tmpdir(), 'cocos-backend-owner-')); });
+    beforeEach(async () => { project = await mkdtemp(join(process.env.COCOS_BACKEND_TEST_TMPDIR ?? tmpdir(), 'cocos-backend-owner-')); });
     afterEach(async () => {
         for (const lease of leases.splice(0)) await lease.release();
         await Promise.all(children.splice(0).map(child => child.exitCode !== null || child.signalCode ? Promise.resolve() : new Promise<void>(resolve => { child.once('exit', () => resolve()); child.kill(); })));
@@ -39,6 +39,7 @@ describe('project backend ownership across processes', () => {
         const results = await Promise.allSettled(contenders.map(process => call(process, { type: 'acquire', project })));
         expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
         for (const result of results) if (result.status === 'rejected') expect(result.reason.code).toBe('ALREADY_RUNNING');
+        expect((await readdir(join(project, 'temp/.cocos-cli-backend'))).sort()).toEqual(['owner.json', 'rendezvous.json']);
         expect((await discoverProjectBackend(project))?.state).toBe('initializing');
         const index = results.findIndex(result => result.status === 'fulfilled');
         const owner = (results[index] as PromiseFulfilledResult<any>).value;
@@ -61,13 +62,34 @@ describe('project backend ownership across processes', () => {
         expect(response.status).toBe(401);
     });
 
+    it('reuses a legacy file registry without replacing its port or format', async () => {
+        const first = await ProjectBackendLease.acquire(project);
+        await first.release();
+        const registry = join(project, 'temp/.cocos-cli-backend/rendezvous.json');
+        const original = await readFile(join(registry, 'port.json'), 'utf8');
+        await rm(registry, { recursive: true });
+        await writeFile(registry, original);
+        const next = await ProjectBackendLease.acquire(project); leases.push(next);
+        expect(next.descriptor.url).toBe(first.descriptor.url);
+        expect(await readFile(registry, 'utf8')).toBe(original);
+        await expect(ProjectBackendLease.acquire(project)).rejects.toMatchObject({ code: 'ALREADY_RUNNING' });
+    });
+
+    it('fails closed on incomplete or corrupt directory registries', async () => {
+        const registry = join(project, 'temp/.cocos-cli-backend/rendezvous.json');
+        await mkdir(registry, { recursive: true });
+        await expect(ProjectBackendLease.acquire(project)).rejects.toMatchObject({ code: 'INVALID_REGISTRY' });
+        await writeFile(join(registry, 'port.json'), '{');
+        await expect(ProjectBackendLease.acquire(project)).rejects.toMatchObject({ code: 'INVALID_REGISTRY' });
+    });
+
     it('canonicalizes aliases and permits different projects', async () => {
         const first = await ProjectBackendLease.acquire(project); leases.push(first);
         await expect(ProjectBackendLease.acquire(join(project, '.'))).rejects.toMatchObject({ code: 'ALREADY_RUNNING' });
         const other = join(project, 'other'); await mkdir(other);
         const second = await ProjectBackendLease.acquire(other); leases.push(second);
         expect(second.descriptor.url).not.toBe(first.descriptor.url);
-        if (process.platform === 'win32') {
+        if (process.platform === 'win32' && !process.env.COCOS_BACKEND_TEST_TMPDIR) {
             const alias = join(project, 'alias');
             await symlink(other, alias, 'junction');
             await expect(ProjectBackendLease.acquire(alias)).rejects.toMatchObject({ code: 'ALREADY_RUNNING' });
