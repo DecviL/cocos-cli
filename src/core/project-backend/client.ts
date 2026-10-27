@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { canonicalProject, discoverProjectBackend, ProjectBackendError, type ProjectBackendDescriptor } from './ownership';
+import { canonicalProject, discoverProjectBackend, queryProjectBackend, ProjectBackendError, type ProjectBackendDescriptor } from './ownership';
 
 export interface StartProjectBackendOptions {
     port?: number;
@@ -12,20 +12,19 @@ export interface StartProjectBackendOptions {
     requireMcp?: boolean;
 }
 const pause = () => new Promise<void>(resolve => setTimeout(resolve, 100));
+const pendingStarts = new Map<string, Promise<ProjectBackendDescriptor>>();
 
-async function waitReady(project: string, options: StartProjectBackendOptions, exited?: () => Error | undefined): Promise<ProjectBackendDescriptor> {
+async function waitReady(project: string, options: StartProjectBackendOptions): Promise<ProjectBackendDescriptor> {
     const deadline = Date.now() + (options.startupTimeoutMs ?? 180000);
     let observed: ProjectBackendDescriptor | null = null;
     while (Date.now() < deadline) {
         try { observed = await discoverProjectBackend(project); }
         catch (error) {
             if (!(error instanceof ProjectBackendError) || !['BACKEND_INITIALIZING', 'BACKEND_UNREACHABLE'].includes(error.code)) throw error;
-            const failure = exited?.();
-            if (failure) throw failure;
             await pause();
             continue;
         }
-        if (!observed && !exited) throw new ProjectBackendError('OWNER_EXITED', 'The previous owner exited before it became ready');
+        if (!observed) throw new ProjectBackendError('OWNER_EXITED', 'The previous backend exited before it became ready');
         if (observed?.state === 'ready' && observed.sceneSession) {
             if (options.requireMcp !== false && !observed.mcpUrl) {
                 throw new ProjectBackendError('CAPABILITY_MISSING', 'The existing owner has no MCP endpoint; register MCP in that owner instead of starting another backend', observed);
@@ -33,40 +32,62 @@ async function waitReady(project: string, options: StartProjectBackendOptions, e
             return observed;
         }
         if (observed?.state === 'failed') throw new ProjectBackendError('BACKEND_FAILED', 'Existing backend failed; ownership remains held until it exits', observed);
-        const failure = exited?.();
-        if (failure) throw failure;
         await pause();
     }
-    throw new ProjectBackendError('STARTUP_TIMEOUT', 'Backend did not become ready; an initializing owner is not terminated or replaced automatically', observed ?? undefined);
+    throw new ProjectBackendError('STARTUP_TIMEOUT', 'Backend did not become ready; an initializing backend is not terminated automatically', observed ?? undefined);
 }
 
-/** Start a separate CLI owner process. A concurrent winner causes ALREADY_RUNNING, never duplicate initialization. */
+/** Start a separate backend with a dynamically assigned control endpoint. */
 export async function startProjectBackend(project: string, options: StartProjectBackendOptions = {}): Promise<ProjectBackendDescriptor> {
     project = await canonicalProject(project);
-    const existing = await discoverProjectBackend(project);
-    if (existing) throw new ProjectBackendError('ALREADY_RUNNING', 'This project already has a backend', existing);
     // Launch the built entry even when the SDK caller itself is running TypeScript sources.
     const entry = join(__dirname, '../../../dist/core/project-backend/entry.js');
     const child = spawn(options.executable ?? process.execPath, [entry, project, JSON.stringify({ port: options.port, allowedOrigins: options.allowedOrigins })], {
-        detached: true, windowsHide: true, stdio: 'ignore',
+        detached: true, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
         env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     });
-    let failure: Error | undefined;
-    const onError = (error: Error) => { failure = error; };
-    const onExit = (code: number | null) => { failure = new ProjectBackendError(code === 73 ? 'ALREADY_RUNNING' : 'STARTUP_FAILED', `Backend process exited before ready (code ${code}); inspect temp/logs/cocos.log`); };
-    child.on('error', onError);
-    child.on('exit', onExit);
     child.unref();
-    try {
-        const ready = await waitReady(project, options, () => failure);
-        if (ready.pid !== child.pid) throw new ProjectBackendError('ALREADY_RUNNING', 'Another process won project ownership', ready);
-        return ready;
-    } finally { child.off('error', onError); child.off('exit', onExit); }
+    // Readiness comes from this child, not owner.json, which another instance may replace.
+    return new Promise<ProjectBackendDescriptor>((resolve, reject) => {
+        const finish = (error?: Error, backend?: ProjectBackendDescriptor) => {
+            clearTimeout(timer);
+            child.off('error', onError);
+            child.off('exit', onExit);
+            child.off('message', onMessage);
+            if (child.connected) child.disconnect();
+            if (error) reject(error); else resolve(backend!);
+        };
+        const onError = (error: Error) => finish(error);
+        const onExit = (code: number | null) => finish(new ProjectBackendError('STARTUP_FAILED', `Backend process exited before ready (code ${code}); inspect temp/logs/cocos.log`));
+        const onMessage = (message: any) => {
+            if (message?.type !== 'project-backend-ready') return;
+            const backend = message.backend as ProjectBackendDescriptor;
+            if (!backend || backend.protocol !== 1 || backend.pid !== child.pid || backend.project !== project
+                || backend.state !== 'ready' || !backend.sceneSession) {
+                finish(new ProjectBackendError('IDENTITY_MISMATCH', 'Invalid backend startup response'));
+            } else if (options.requireMcp !== false && !backend.mcpUrl) {
+                finish(new ProjectBackendError('CAPABILITY_MISSING', 'The started backend has no MCP endpoint'));
+            } else finish(undefined, backend);
+        };
+        const timer = setTimeout(() => finish(new ProjectBackendError('STARTUP_TIMEOUT', 'Backend did not become ready within the startup deadline')), options.startupTimeoutMs ?? 180000);
+        child.on('error', onError);
+        child.on('exit', onExit);
+        child.on('message', onMessage);
+    });
 }
 
-/** IDE entry point: discover/connect, or race safely to start exactly one owner. */
+/** Discover/reuse a backend, sharing startup requests within this calling process. */
 export async function ensureProjectBackend(project: string, options: StartProjectBackendOptions = {}): Promise<ProjectBackendDescriptor> {
     project = await canonicalProject(project);
+    const pending = pendingStarts.get(project);
+    if (pending) return pending;
+    const startup = ensureBackend(project, options);
+    pendingStarts.set(project, startup);
+    try { return await startup; }
+    finally { if (pendingStarts.get(project) === startup) pendingStarts.delete(project); }
+}
+
+async function ensureBackend(project: string, options: StartProjectBackendOptions): Promise<ProjectBackendDescriptor> {
     const deadline = Date.now() + (options.startupTimeoutMs ?? 180000);
     while (Date.now() < deadline) {
         try {
@@ -75,7 +96,7 @@ export async function ensureProjectBackend(project: string, options: StartProjec
             if (existing) return await waitReady(project, remaining);
             return await startProjectBackend(project, remaining);
         } catch (error) {
-            if (!(error instanceof ProjectBackendError) || !['ALREADY_RUNNING', 'BACKEND_INITIALIZING', 'BACKEND_UNREACHABLE', 'OWNER_EXITED'].includes(error.code)) throw error;
+            if (!(error instanceof ProjectBackendError) || !['BACKEND_INITIALIZING', 'BACKEND_UNREACHABLE', 'OWNER_EXITED'].includes(error.code)) throw error;
             await pause();
         }
     }
@@ -84,7 +105,7 @@ export async function ensureProjectBackend(project: string, options: StartProjec
 
 /** Explicit owner shutdown, not an editor/view disconnect operation. */
 export async function stopProjectBackend(backend: ProjectBackendDescriptor): Promise<void> {
-    const current = await discoverProjectBackend(backend.project);
+    const current = await queryProjectBackend(backend);
     if (!current) return;
     if (current.ownerId !== backend.ownerId || current.token !== backend.token) throw new ProjectBackendError('OWNER_CHANGED', 'Refusing to stop a replacement backend');
     if (current.state === 'failed') throw new ProjectBackendError('SHUTDOWN_FAILED', 'Backend cleanup previously failed; ownership is retained', current);
@@ -95,7 +116,7 @@ export async function stopProjectBackend(backend: ProjectBackendDescriptor): Pro
     const deadline = Date.now() + 30000;
     while (Date.now() < deadline) {
         let observed: ProjectBackendDescriptor | null;
-        try { observed = await discoverProjectBackend(backend.project); }
+        try { observed = await queryProjectBackend(backend); }
         catch (error) {
             if (error instanceof ProjectBackendError && ['BACKEND_INITIALIZING', 'BACKEND_UNREACHABLE'].includes(error.code)) { await pause(); continue; }
             throw error;

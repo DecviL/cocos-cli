@@ -29,7 +29,7 @@ jest.mock('../src/core/scene', () => ({ startupScene: mockSceneStart }));
 jest.mock('../src/core/scene/main-process/scene-worker', () => ({ sceneWorker: { stop: mockSceneStop } }));
 jest.mock('../src/core/project-backend/runtime', () => ({ ensureOwnedSceneSession: jest.fn(async () => undefined), closeOwnedSceneSession: jest.fn(async () => undefined) }));
 import Launcher from '../src/core/launcher';
-import { ProjectBackendLease, discoverProjectBackend } from '../src/core/project-backend/ownership';
+import { ProjectBackendLease, discoverProjectBackend, queryProjectBackend } from '../src/core/project-backend/ownership';
 
 describe('Launcher ownership boundary', () => {
     let project: string;
@@ -37,15 +37,17 @@ describe('Launcher ownership boundary', () => {
     beforeEach(async () => { jest.clearAllMocks(); project = await mkdtemp(join(tmpdir(), 'cocos-launcher-owner-')); launcher = new Launcher(project); });
     afterEach(async () => { await launcher.close(); await rm(project, { recursive: true, force: true }); });
 
-    it('rejects a duplicate before initializing configuration, scripts, assets or the engine worker', async () => {
+    it('starts with a fresh control endpoint even when another backend exists for the project', async () => {
         const existing = await ProjectBackendLease.acquire(project);
         try {
-            await expect(launcher.startup()).rejects.toMatchObject({ code: 'ALREADY_RUNNING' });
-            expect(mockConfiguration).not.toHaveBeenCalled();
-            expect(mockAssetsInit).not.toHaveBeenCalled();
-            expect(mockScriptInit).not.toHaveBeenCalled();
-            expect(mockSceneStart).not.toHaveBeenCalled();
+            await launcher.startup();
+            expect(mockConfiguration).toHaveBeenCalledTimes(1);
+            expect(mockAssetsInit).toHaveBeenCalledTimes(1);
+            expect(mockScriptInit).toHaveBeenCalledTimes(1);
+            expect(mockSceneStart).toHaveBeenCalledTimes(1);
             expect(mockProjectClose).not.toHaveBeenCalled();
+            expect((await discoverProjectBackend(project))?.url).not.toBe(existing.descriptor.url);
+            expect((await queryProjectBackend(existing.descriptor))?.ownerId).toBe(existing.descriptor.ownerId);
         } finally { await existing.release(); }
     });
 
@@ -55,7 +57,7 @@ describe('Launcher ownership boundary', () => {
         expect(mockSceneStart).toHaveBeenCalledTimes(1);
         expect((await discoverProjectBackend(project))?.state).toBe('ready');
         mockAssetsStop.mockImplementationOnce(async () => {
-            await expect(ProjectBackendLease.acquire(project)).rejects.toMatchObject({ code: 'ALREADY_RUNNING' });
+            expect((await discoverProjectBackend(project))?.state).toBe('stopping');
         });
         await launcher.close();
         expect(mockSceneStop).toHaveBeenCalledTimes(1);
