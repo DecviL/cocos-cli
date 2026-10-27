@@ -3557,7 +3557,7 @@ export declare interface Config {
     treeShake?: ITreeShakeConfig;
 }
 export declare namespace ConfigInterface {
-        {
+        export {
         Config,
         IndexConfig,
         Test,
@@ -6879,7 +6879,7 @@ export declare type ResolveImportMetaHook = (
     options: { chunkId: string; format: InternalModuleFormat; moduleId: string }
 ) => string | null | void;
 export declare namespace rollup {
-        {
+        export {
         rollup_2 as rollup,
         watch,
         defineConfig,
