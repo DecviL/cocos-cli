@@ -101,6 +101,7 @@ declare class AnimationGraphAssetService {
     assertExternalWriteAllowed(uuidOrUrlOrPath: string): void;
     private _getOrLoad;
     private _loadDocument;
+    private _loadProjectScripts;
     private _queryAnimationGraphAsset;
     private _readFingerprint;
     private _refreshExternalState;
@@ -14511,6 +14512,7 @@ declare class AnimationGraphAssetService {
     assertExternalWriteAllowed(uuidOrUrlOrPath: string): void;
     private _getOrLoad;
     private _loadDocument;
+    private _loadProjectScripts;
     private _queryAnimationGraphAsset;
     private _readFingerprint;
     private _refreshExternalState;
@@ -18729,6 +18731,9 @@ declare class ScriptManager {
     private _pendingCompileTimer;
     private _pendingCompileTaskId;
     private _projectPath;
+    private _scriptRevision;
+    private _loadedScripts;
+    constructor();
     initialize(projectPath: string, enginePath: string, features: string[]): Promise<void>;
     get projectPath(): string;
     queryScriptUsers(path: string): Promise<string[]>;
@@ -18741,6 +18746,7 @@ declare class ScriptManager {
     isCompiling(): boolean;
     getCurrentTaskId(): string | null;
     isTargetReady(targetName: string): boolean;
+    ensureScriptsLoaded(scriptUuids: string[], pluginScripts?: IPluginScriptInfo[]): Promise<void>;
     loadScript(scriptUuids: string[], pluginScripts?: IPluginScriptInfo[]): Promise<void>;
     queryCCEModuleMap(): CCEModuleMap;
     getPackerDriverLoaderContext(targetName: string): SerializedLoaderContext | undefined;
@@ -19299,6 +19305,9 @@ declare class ScriptManager {
     private _pendingCompileTimer;
     private _pendingCompileTaskId;
     private _projectPath;
+    private _scriptRevision;
+    private _loadedScripts;
+    constructor();
     initialize(projectPath: string, enginePath: string, features: string[]): Promise<void>;
     get projectPath(): string;
     queryScriptUsers(path: string): Promise<string[]>;
@@ -19311,6 +19320,7 @@ declare class ScriptManager {
     isCompiling(): boolean;
     getCurrentTaskId(): string | null;
     isTargetReady(targetName: string): boolean;
+    ensureScriptsLoaded(scriptUuids: string[], pluginScripts?: IPluginScriptInfo_2[]): Promise<void>;
     loadScript(scriptUuids: string[], pluginScripts?: IPluginScriptInfo_2[]): Promise<void>;
     queryCCEModuleMap(): CCEModuleMap;
     getPackerDriverLoaderContext(targetName: string): SerializedLoaderContext | undefined;
